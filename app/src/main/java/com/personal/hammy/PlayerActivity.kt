@@ -232,6 +232,16 @@ class PlayerActivity : AppCompatActivity() {
                 "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
                 null
             )
+            return true
+        }
+        // Seek back / forward unless Close is focused (so Left can leave Close)
+        if (isSeekBackKey(keyCode) && !closeButton.isFocused) {
+            seekVideo(-10)
+            return true
+        }
+        if (isSeekForwardKey(keyCode) && !closeButton.isFocused) {
+            seekVideo(10)
+            return true
         }
         // Up from WebView can move focus to Close for leanback users
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP && webView.hasFocus()) {
@@ -239,6 +249,24 @@ class PlayerActivity : AppCompatActivity() {
             return true
         }
         return super.onKeyDown(keyCode, event)
+    }
+
+    private fun isSeekBackKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_REWIND ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_PREVIOUS
+
+    private fun isSeekForwardKey(keyCode: Int): Boolean =
+        keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_FAST_FORWARD ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_NEXT
+
+    private fun seekVideo(deltaSeconds: Int) {
+        if (!::webView.isInitialized) return
+        webView.evaluateJavascript(
+            "(function(){try{if(window.__hammySeekVideo){return window.__hammySeekVideo($deltaSeconds);}}catch(e){}return false;})();",
+            null
+        )
     }
 
     @Deprecated("Deprecated in Java")

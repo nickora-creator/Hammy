@@ -1,6 +1,6 @@
 package com.personal.hammy
 
-/** Shared WebView focus-ring / play-pause helpers (v0.1.1) for the player screen. */
+/** Shared WebView focus-ring / play-pause / seek helpers for the player screen. */
 object FocusInjectJs {
     val SCRIPT: String = buildFocusJs()
 
@@ -19,6 +19,11 @@ object FocusInjectJs {
   var HINT_ID = 'hammy-video-hint';
   var PAD = 6;
   var lastToggleAt = 0;
+  var lastSeekAt = 0;
+  var hintHideTimer = null;
+  var HINT_HIDE_MS = 3000;
+  var TOAST_HIDE_MS = 1000;
+  var DEFAULT_HINT = 'OK / Enter — Play / Pause';
 
   function cssText() {
     var nl = String.fromCharCode(10);
@@ -105,10 +110,34 @@ object FocusInjectJs {
       h = document.createElement('div');
       h.id = HINT_ID;
       h.setAttribute('aria-hidden', 'true');
-      h.textContent = 'OK / Enter — Play / Pause';
+      h.textContent = DEFAULT_HINT;
       (document.body || document.documentElement).appendChild(h);
     }
     return h;
+  }
+
+  function clearHintTimer() {
+    if (hintHideTimer) {
+      clearTimeout(hintHideTimer);
+      hintHideTimer = null;
+    }
+  }
+
+  function hideHint() {
+    clearHintTimer();
+    var h = document.getElementById(HINT_ID);
+    if (h) h.style.display = 'none';
+  }
+
+  function showHintBrief(text, hideMs) {
+    var h = ensureHint();
+    h.textContent = text || DEFAULT_HINT;
+    h.style.display = 'block';
+    clearHintTimer();
+    hintHideTimer = setTimeout(function() {
+      hintHideTimer = null;
+      h.style.display = 'none';
+    }, hideMs || HINT_HIDE_MS);
   }
 
   function isVisible(el) {
@@ -133,13 +162,30 @@ object FocusInjectJs {
     return null;
   }
 
+  function findMainVideo() {
+    var videos = document.querySelectorAll('video');
+    var best = null;
+    var bestArea = 0;
+    for (var i = 0; i < videos.length; i++) {
+      var v = videos[i];
+      var rect = v.getBoundingClientRect();
+      var area = Math.max(0, rect.width) * Math.max(0, rect.height);
+      if (area < 4) continue;
+      if (!best || area > bestArea) {
+        best = v;
+        bestArea = area;
+      }
+    }
+    if (best) return best;
+    return videos.length ? videos[0] : null;
+  }
+
   function updateRing() {
     var el = document.activeElement;
     var ring = ensureRing();
-    var hint = ensureHint();
+    ensureHint();
     if (!isVisible(el)) {
       ring.style.display = 'none';
-      hint.style.display = 'none';
       return;
     }
     var rect = el.getBoundingClientRect();
@@ -148,14 +194,6 @@ object FocusInjectJs {
     ring.style.left = Math.max(0, rect.left - PAD) + 'px';
     ring.style.width = Math.max(8, rect.width + PAD * 2) + 'px';
     ring.style.height = Math.max(8, rect.height + PAD * 2) + 'px';
-
-    var v = findRelatedVideo(el);
-    if (v) {
-      hint.style.display = 'block';
-      hint.textContent = v.paused ? 'OK / Enter — Play' : 'OK / Enter — Pause';
-    } else {
-      hint.style.display = 'none';
-    }
   }
 
   function prepVideos() {
@@ -171,12 +209,35 @@ object FocusInjectJs {
     var now = Date.now();
     if (now - lastToggleAt < 350) return false;
     var el = document.activeElement;
-    var v = findRelatedVideo(el);
+    var v = findRelatedVideo(el) || findMainVideo();
     if (!v) return false;
     lastToggleAt = now;
     try {
       if (v.paused) { v.play(); } else { v.pause(); }
       updateRing();
+      showHintBrief(v.paused ? 'OK / Enter — Play' : 'OK / Enter — Pause', HINT_HIDE_MS);
+      return true;
+    } catch (e) { return false; }
+  };
+
+  window.__hammySeekVideo = function(deltaSeconds) {
+    var now = Date.now();
+    if (now - lastSeekAt < 120) return false;
+    var delta = Number(deltaSeconds);
+    if (!isFinite(delta) || delta === 0) return false;
+    var v = findRelatedVideo(document.activeElement) || findMainVideo();
+    if (!v) return false;
+    var dur = v.duration;
+    if (!isFinite(dur) || dur <= 0) dur = Number.MAX_VALUE;
+    var next = v.currentTime + delta;
+    if (next < 0) next = 0;
+    if (next > dur) next = dur;
+    try {
+      v.currentTime = next;
+      lastSeekAt = now;
+      updateRing();
+      var label = (delta > 0 ? '+' : '') + Math.round(delta) + 's';
+      showHintBrief(label, TOAST_HIDE_MS);
       return true;
     } catch (e) { return false; }
   };
@@ -187,7 +248,7 @@ object FocusInjectJs {
     // 13 Enter, 23 DPAD_CENTER (Android WebView), 32 Space
     if (code === 13 || code === 23 || code === 32) {
       var el = document.activeElement;
-      if (findRelatedVideo(el)) {
+      if (findRelatedVideo(el) || findMainVideo()) {
         if (window.__hammyToggleVideo('js')) {
           e.preventDefault();
           e.stopPropagation();
@@ -237,6 +298,8 @@ object FocusInjectJs {
 
   prepVideos();
   updateRing();
+  // Brief initial OK/Enter hint, then auto-hide
+  showHintBrief(DEFAULT_HINT, HINT_HIDE_MS);
   setTimeout(refresh, 300);
   setTimeout(refresh, 1000);
   setTimeout(refresh, 2500);
