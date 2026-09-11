@@ -24,7 +24,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * Dedicated player: loads only the selected video's official page URL in a WebView,
- * then injects JS/CSS to present fullscreen video (hide site chrome) plus the v0.1.1
+ * then injects lite player assist (gentle play + Skip/Close focus) plus the v0.1.1
  * focus-ring / Center play-pause helpers.
  *
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
