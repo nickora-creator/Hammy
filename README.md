@@ -11,7 +11,7 @@ Personal-use Fire TV / Android TV sideload app. Native Leanback-style browse gri
 2. **Orientation** — Straight / Gay / Trans (large DPAD cards)  
 3. **Categories** — ~25–40 popular categories shuffled each open; select up to 10; Continue or Skip  
 4. **Browse (native)** — focusable poster/thumbnail cards in a TV grid + shortcut bar (Home, Change prefs, selected categories)  
-5. **Player** — fullscreen WebView for that video’s official page URL only (focus-ring injection for terms/consent + controls)
+5. **Player** — fullscreen WebView for that video’s official page URL only; JS/CSS strips site chrome so the main `<video>` / player fills the screen (TV-style). Keeps focus-ring + Center play-pause; consent/age dialogs stay usable until dismissed.
 
 Preferences (orientation + categories) are stored in `SharedPreferences`.
 
@@ -70,11 +70,11 @@ adb install -r /workspace/hammy/app/build/outputs/apk/debug/app-debug.apk
 
 ## Remote focus (Fire TV D-pad)
 
-Browse uses native focusable cards (scale + lime/cyan border). Player WebView injects strong `:focus` CSS plus a floating ring that tracks `document.activeElement` (helps on consent/terms overlays). Videos get `tabindex`, enlarged control focus styles, and Center/Enter play-pause with an on-screen hint. Native AgeGate / Orientation / Categories use thicker focus borders and scale-up.
+Browse uses native focusable cards (scale + lime/cyan border). Player WebView injects chrome-hiding CSS/JS (retries) so only the main video/player remains, scaled to the viewport (`object-fit: contain`), with autoplay + fullscreen attempts. Also injects strong `:focus` CSS plus a floating ring (consent/terms overlays). Videos get `tabindex`, enlarged control focus styles, and Center/Enter play-pause with an on-screen hint. Native AgeGate / Orientation / Categories use thicker focus borders and scale-up. PlayerActivity uses immersive `LAYOUT_FULLSCREEN` / hidden system UI.
 
 ## Hardware Back
 
-- **Player:** WebView history → `goBack()`; otherwise finish player  
+- **Player:** Back exits to the browse grid  
 - **Browse:** finish browse activity  
 
 ## License / use
