@@ -3,6 +3,7 @@ package com.personal.hammy
 import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -13,6 +14,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -25,14 +27,22 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 
 /**
  * Dedicated player: loads only the selected video's official page URL in a WebView,
  * then injects lite player assist (gentle play + Skip Ads poll/focus) plus the
  * focus-ring / Center play-pause helpers.
  *
+ * CookieManager is seeded with xHamster ageProtectAgreement / parental-control /
+ * cookie_accept before the first load so the 18+ overlay is skipped. If the gate
+ * still appears, cookies are re-applied and the video URL is reloaded once.
+ *
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
- * escape ad traps even if the page WebView is stuck.
+ * escape ad traps even if the page WebView is stuck. While the age gate is visible,
+ * Close is not focusable so OK cannot exit via the native X.
  *
  * DPAD_CENTER always tries __hammyActivateFocusedOrBlockingCta (native tapAt then
  * hard-click age/skip or focused CTA) before play-pause — bridge flags are not
@@ -50,6 +60,11 @@ class PlayerActivity : AppCompatActivity() {
 
     @Volatile
     private var ageGateVisible = false
+
+    private var playerPageUrl: String = ""
+    private var ageGateReloadDone = false
+    private var initialWebFocusDone = false
+    private var ageGateReloadRunnable: Runnable? = null
 
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
@@ -72,6 +87,7 @@ class PlayerActivity : AppCompatActivity() {
         @JavascriptInterface
         fun ageGateVisible(visible: Boolean) {
             ageGateVisible = visible
+            mainHandler.post { onAgeGateVisibleChanged(visible) }
         }
 
         /**
@@ -133,6 +149,7 @@ class PlayerActivity : AppCompatActivity() {
             finish()
             return
         }
+        playerPageUrl = pageUrl
 
         rootLayout = findViewById(R.id.playerRoot)
         webView = findViewById(R.id.playerWebView)
@@ -142,8 +159,13 @@ class PlayerActivity : AppCompatActivity() {
             if (event.action == KeyEvent.ACTION_DOWN &&
                 (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
             ) {
-                exitPlayer()
-                true
+                if (ageGateVisible) {
+                    activateFocusedOrBlockingCtaThenMaybeToggle()
+                    true
+                } else {
+                    exitPlayer()
+                    true
+                }
             } else {
                 false
             }
@@ -166,6 +188,8 @@ class PlayerActivity : AppCompatActivity() {
         webView.isHorizontalScrollBarEnabled = false
         webView.addJavascriptInterface(HammyBridge(), "HammyBridge")
 
+        applyXhAgeCookies(pageUrl)
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
@@ -174,6 +198,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                applyXhAgeCookies(url ?: playerPageUrl)
                 // Early age-confirm storage/cookie flags before gate scripts run
                 view?.evaluateJavascript(PlayerChromeJs.AGE_BYPASS_SCRIPT, null)
             }
@@ -228,7 +253,146 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
 
-        webView.loadUrl(pageUrl)
+        // Do not give Close initial focus — OK must land in the WebView / age CTA.
+        webView.requestFocus()
+        rootLayout.post { focusWebViewNotClose() }
+
+        CookieManager.getInstance().flush()
+        webView.post {
+            if (!::webView.isInitialized) return@post
+            applyXhAgeCookies(playerPageUrl)
+            CookieManager.getInstance().flush()
+            webView.loadUrl(playerPageUrl)
+            focusWebViewNotClose()
+        }
+    }
+
+    /**
+     * Seed CookieManager for xhamster.com / .xhamster.com before navigation.
+     * ageProtectAgreement = 18+ overlay accepted; parental-control = age assurance;
+     * cookie_accept / cookie_accept_v2 = cookie banner. TTL ~365 days.
+     */
+    private fun applyXhAgeCookies(pageUrl: String? = playerPageUrl) {
+        try {
+            val cm = CookieManager.getInstance()
+            cm.setAcceptCookie(true)
+            if (::webView.isInitialized) {
+                try {
+                    cm.setAcceptThirdPartyCookies(webView, true)
+                } catch (_: Exception) {
+                }
+            }
+            val maxAge = 365 * 24 * 60 * 60
+            val expires = httpExpiresGmt(365)
+            val names = arrayOf(
+                "ageProtectAgreement",
+                "parental-control",
+                "cookie_accept",
+                "cookie_accept_v2"
+            )
+            val urls = linkedSetOf(
+                "https://xhamster.com/",
+                "https://www.xhamster.com/"
+            )
+            pageUrl?.takeIf { it.isNotBlank() }?.let { raw ->
+                try {
+                    val uri = Uri.parse(raw)
+                    val host = uri.host
+                    if (!host.isNullOrBlank()) {
+                        val scheme = (uri.scheme ?: "https").ifBlank { "https" }
+                        urls.add("$scheme://$host/")
+                        val bare = host.removePrefix("www.")
+                        urls.add("$scheme://$bare/")
+                        urls.add("$scheme://www.$bare/")
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            val domains = linkedSetOf(".xhamster.com")
+            pageUrl?.let { raw ->
+                try {
+                    val host = Uri.parse(raw).host
+                    if (!host.isNullOrBlank()) {
+                        val bare = host.removePrefix("www.")
+                        if (bare.contains('.')) domains.add(".$bare")
+                    }
+                } catch (_: Exception) {
+                }
+            }
+            for (url in urls) {
+                for (name in names) {
+                    cm.setCookie(url, "$name=1; Path=/; Max-Age=$maxAge; Expires=$expires")
+                    cm.setCookie(url, "$name=1; Path=/; Max-Age=$maxAge; Expires=$expires; Secure")
+                    for (domain in domains) {
+                        cm.setCookie(
+                            url,
+                            "$name=1; Domain=$domain; Path=/; Max-Age=$maxAge; Expires=$expires; Secure; SameSite=Lax"
+                        )
+                    }
+                }
+            }
+            cm.flush()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun httpExpiresGmt(days: Int): String {
+        val fmt = DateTimeFormatter.RFC_1123_DATE_TIME.withZone(ZoneOffset.UTC)
+        return fmt.format(Instant.now().plusSeconds(days.toLong() * 24L * 3600L))
+    }
+
+    private fun onAgeGateVisibleChanged(visible: Boolean) {
+        applyCloseButtonForAgeGate(visible)
+        if (visible) {
+            scheduleAgeGateCookieReload()
+        } else {
+            cancelAgeGateCookieReload()
+        }
+    }
+
+    /** While the site 18+ overlay is up, Close must not take DPAD/OK. */
+    private fun applyCloseButtonForAgeGate(visible: Boolean) {
+        if (!::closeButton.isInitialized) return
+        if (visible) {
+            closeButton.isFocusable = false
+            closeButton.isFocusableInTouchMode = false
+            if (closeButton.isFocused) closeButton.clearFocus()
+            focusWebViewNotClose()
+        } else {
+            closeButton.isFocusable = true
+            closeButton.isFocusableInTouchMode = true
+        }
+    }
+
+    private fun focusWebViewNotClose() {
+        if (!::webView.isInitialized) return
+        if (::closeButton.isInitialized && closeButton.isFocused) {
+            closeButton.clearFocus()
+        }
+        webView.requestFocus()
+    }
+
+    private fun scheduleAgeGateCookieReload() {
+        if (ageGateReloadDone) return
+        cancelAgeGateCookieReload()
+        val run = Runnable {
+            if (ageGateReloadDone || !ageGateVisible) return@Runnable
+            if (!::webView.isInitialized) return@Runnable
+            val url = playerPageUrl
+            if (url.isBlank()) return@Runnable
+            ageGateReloadDone = true
+            applyXhAgeCookies(url)
+            CookieManager.getInstance().flush()
+            webView.loadUrl(url)
+            focusWebViewNotClose()
+        }
+        ageGateReloadRunnable = run
+        mainHandler.postDelayed(run, 2200L)
+    }
+
+    private fun cancelAgeGateCookieReload() {
+        ageGateReloadRunnable?.let { mainHandler.removeCallbacks(it) }
+        ageGateReloadRunnable = null
     }
 
     private fun hideCustomViewOnly() {
@@ -279,7 +443,15 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) applyImmersiveFullscreen()
+        if (hasFocus) {
+            applyImmersiveFullscreen()
+            if (ageGateVisible) {
+                applyCloseButtonForAgeGate(true)
+            } else if (!initialWebFocusDone && ::webView.isInitialized) {
+                initialWebFocusDone = true
+                focusWebViewNotClose()
+            }
+        }
     }
 
     private fun schedulePlayerInjection() {
@@ -313,6 +485,15 @@ class PlayerActivity : AppCompatActivity() {
                 return true
             }
             if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                // Age gate: never route OK to exitPlayer via Close focus.
+                if (ageGateVisible) {
+                    if (closeButton.isFocused) {
+                        closeButton.clearFocus()
+                        webView.requestFocus()
+                    }
+                    activateFocusedOrBlockingCtaThenMaybeToggle()
+                    return true
+                }
                 if (closeButton.isFocused) {
                     exitPlayer()
                     return true
@@ -353,8 +534,12 @@ class PlayerActivity : AppCompatActivity() {
                 seekVideo(10)
                 return true
             }
-            // Up from WebView can move focus to Close for leanback users
+            // Up from WebView can move focus to Close for leanback users —
+            // not while the age overlay is up (OK would otherwise hit Close).
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP && webView.hasFocus()) {
+                if (ageGateVisible) {
+                    return true
+                }
                 closeButton.requestFocus()
                 return true
             }
@@ -378,7 +563,7 @@ class PlayerActivity : AppCompatActivity() {
                 "}catch(e){}return false;})();"
         ) { result ->
             val activated = result == "true"
-            if (!activated && ::webView.isInitialized) {
+            if (!activated && ::webView.isInitialized && !ageGateVisible) {
                 webView.evaluateJavascript(
                     "(function(){try{if(window.__hammyToggleVideo){" +
                         "return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
@@ -430,6 +615,7 @@ class PlayerActivity : AppCompatActivity() {
         injectGeneration++
         skipAdsVisible = false
         ageGateVisible = false
+        cancelAgeGateCookieReload()
         mainHandler.removeCallbacksAndMessages(null)
         if (::webView.isInitialized) {
             webView.destroy()

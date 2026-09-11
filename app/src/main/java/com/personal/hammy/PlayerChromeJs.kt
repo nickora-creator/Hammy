@@ -8,8 +8,9 @@ package com.personal.hammy
  *   1) Age-gate / 18+ confirm controls (priority)
  *   2) Site's own Skip Ads / Skip / Skip Ad control
  * When either appears: outline once, notify Kotlin via HammyBridge, and
- * auto-activate via native [HammyBridge.tapAt] (up to 5× / 800ms) with hardClick
- * as secondary. Does NOT reparent the video, hide body siblings, force fullscreen
+ * auto-activate via native [HammyBridge.tapAt] (5–8× / ~700ms) with hardClick
+ * as secondary. Prefers the exact age-enter CTA / largest red button.
+ * Does NOT reparent the video, hide body siblings, force fullscreen
  * CSS, or run an aggressive ad classifier.
  *
  * Focus-ring / Center play-pause stay in [FocusInjectJs]. Native Close + Back/Menu
@@ -35,6 +36,11 @@ object PlayerChromeJs {
         var host = location.hostname || '';
         if (host.indexOf('xhamster') !== -1) {
           document.cookie = base + '; domain=.xhamster.com';
+        } else if (host.indexOf('.') !== -1) {
+          var parts = host.split('.');
+          if (parts.length >= 2) {
+            document.cookie = base + '; domain=.' + parts.slice(-2).join('.');
+          }
         }
       } catch (eD) {}
     } catch (e) {}
@@ -45,8 +51,9 @@ object PlayerChromeJs {
     'age_gate', 'ageGate', 'ageGateConfirmed', 'age_gate_confirmed',
     'confirmAge', 'confirm_age', 'isAdult', 'is_adult', 'adult',
     'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
-    'cookie_accept', 'cookiesAccepted', 'disclaimerAccepted',
-    'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed'
+    'cookie_accept', 'cookie_accept_v2', 'cookiesAccepted', 'disclaimerAccepted',
+    'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed',
+    'ageProtectAgreement', 'parental-control', 'age_protect_agreement'
   ];
   try {
     for (var i = 0; i < keys.length; i++) {
@@ -105,12 +112,13 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV8) {
+  if (window.__hammyChromeV9) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV8 = true;
-  try { delete window.__hammyChromeV7; } catch(e) {}
+  window.__hammyChromeV9 = true;
+  try { delete window.__hammyChromeV8; } catch(e) {}
+    try { delete window.__hammyChromeV7; } catch(e) {}
   try { delete window.__hammyChromeV6; } catch(e) {}
   try { delete window.__hammyChromeV5; } catch(e) {}
   try { delete window.__hammyChromeV4; } catch(e) {}
@@ -136,6 +144,11 @@ object PlayerChromeJs {
             var host = location.hostname || '';
             if (host.indexOf('xhamster') !== -1) {
               document.cookie = base + '; domain=.xhamster.com';
+            } else if (host.indexOf('.') !== -1) {
+              var parts = host.split('.');
+              if (parts.length >= 2) {
+                document.cookie = base + '; domain=.' + parts.slice(-2).join('.');
+              }
             }
           } catch (eD) {}
         } catch (e) {}
@@ -145,8 +158,9 @@ object PlayerChromeJs {
         'age_gate', 'ageGate', 'ageGateConfirmed', 'age_gate_confirmed',
         'confirmAge', 'confirm_age', 'isAdult', 'is_adult', 'adult',
         'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
-        'cookie_accept', 'cookiesAccepted', 'disclaimerAccepted',
-        'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed'
+        'cookie_accept', 'cookie_accept_v2', 'cookiesAccepted', 'disclaimerAccepted',
+        'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed',
+        'ageProtectAgreement', 'parental-control', 'age_protect_agreement'
       ];
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
@@ -374,26 +388,54 @@ object PlayerChromeJs {
       candidates = document.querySelectorAll(
         'button, a, [role="button"], input[type="button"], input[type="submit"], div[tabindex], span[tabindex],' +
         ' [class*="age" i], [id*="age" i], [class*="gate" i], [id*="gate" i],' +
-        ' [class*="consent" i], [id*="consent" i], [aria-label*="18" i], [aria-label*="age" i]'
+        ' [class*="consent" i], [id*="consent" i], [aria-label*="18" i], [aria-label*="age" i],' +
+        ' [class*="Age" i], [class*="Protect" i], [class*="overlay" i]'
       );
     } catch (e) {
       return out;
     }
-    var strongRe = /\b(i['’]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+)\b/i;
+    /* Exact Insignia/TV overlay: "I'm 18 or older — enter xHamster" (em/en dash or hyphen). */
+    var exactEnterRe = /i['’`]?m\s*18\s*or\s*older\s*[\u2014\u2013\-]\s*enter\s*xhamster/i;
+    var strongRe = /\b(i['’`]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+|enter\s+xhamster)\b/i;
     var softCtaRe = /\b(enter|i\s+agree|accept|continue|confirm)\b/i;
-    var ageCtxRe = /\b(age|gate|18|adult|nsfw|mature|over.?18|confirm.?age|age.?verif|disclaimer)\b/i;
+    var ageCtxRe = /\b(age|gate|18|adult|nsfw|mature|over.?18|confirm.?age|age.?verif|disclaimer|xhamster)\b/i;
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
       if (!isVisibleClickable(el)) continue;
       var label = normalizeLabel(el);
       if (!label) continue;
       if (/\bskip(\s+ads?)?\b/i.test(label)) continue;
-      if (/\b(cookie|subscribe|sign in|login|register|sign up)\b/i.test(label) && !strongRe.test(label)) continue;
-      var strong = strongRe.test(label);
+      if (/\b(cookie|subscribe|sign in|login|register|sign up)\b/i.test(label) && !strongRe.test(label) && !exactEnterRe.test(label)) continue;
+      var exactEnter = exactEnterRe.test(label);
+      var strong = exactEnter || strongRe.test(label);
       var soft = softCtaRe.test(label);
       var ctx = ageCtxRe.test(label) || ageCtxRe.test(ancestorContext(el, 5));
       if (!(strong || (soft && ctx))) continue;
-      out.push({ el: el, exact: strong, clearlyAge: strong || (soft && ctx), label: label });
+      var area = 0;
+      var redScore = 0;
+      try {
+        var r = el.getBoundingClientRect();
+        area = Math.max(0, r.width) * Math.max(0, r.height);
+        var st = window.getComputedStyle(el);
+        var bg = (st.backgroundColor || '') + ' ' + (st.backgroundImage || '') + ' ' + (st.borderColor || '');
+        var m = bg.match(/rgba?\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+        if (m) {
+          var rr = parseInt(m[1], 10), gg = parseInt(m[2], 10), bb = parseInt(m[3], 10);
+          if (rr > 140 && rr > gg + 40 && rr > bb + 40) redScore = 1000000 + (rr - gg) + (rr - bb);
+        }
+        if (/#?(e|f|c|d|a)[0-9a-f]{0,2}0{1,2}[0-9a-f]{0,2}|red|tomato|crimson|ff0000|e50914|f44336/i.test(bg)) {
+          redScore = Math.max(redScore, 900000);
+        }
+      } catch (eM) {}
+      out.push({
+        el: el,
+        exact: exactEnter || strong,
+        exactEnter: exactEnter,
+        clearlyAge: strong || (soft && ctx),
+        label: label,
+        area: area,
+        redScore: redScore
+      });
     }
     return out;
   }
@@ -580,7 +622,8 @@ object PlayerChromeJs {
     }
     if (!label) return false;
     if (/\bskip(\s+ads?)?\b/i.test(label)) return true;
-    if (/\b(i['’]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+)\b/i.test(label)) return true;
+    if (/i['’`]?m\s*18\s*or\s*older\s*[\u2014\u2013\-]\s*enter\s*xhamster/i.test(label)) return true;
+    if (/\b(i['’`]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+|enter\s+xhamster)\b/i.test(label)) return true;
     if (/\b(enter|i\s+agree|accept|continue|confirm)\b/i.test(label) &&
         (/\b(age|gate|18|adult|nsfw|mature|disclaimer)\b/i.test(label) ||
          /\b(age|gate|18|adult|nsfw|mature|disclaimer)\b/i.test(ancestorContext(el, 5)))) {
@@ -625,9 +668,20 @@ object PlayerChromeJs {
   function pickBestAge(controls) {
     if (!controls || !controls.length) return null;
     var best = controls[0];
+    var bestScore = -1;
     for (var i = 0; i < controls.length; i++) {
-      if (controls[i].exact) { best = controls[i]; break; }
-      if (controls[i].clearlyAge) best = controls[i];
+      var c = controls[i];
+      var score = 0;
+      if (c.exactEnter) score += 50000000;
+      if (c.exact) score += 10000000;
+      if (c.clearlyAge) score += 1000000;
+      score += (c.redScore || 0);
+      score += Math.min(c.area || 0, 2000000);
+      if (/enter\s*xhamster|18\s*or\s*older/i.test(c.label || '')) score += 5000000;
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
     }
     return best;
   }
@@ -660,13 +714,13 @@ object PlayerChromeJs {
         if (target) el = target;
       }
       if (target && isVisibleClickable(target)) {
-        // Outline only; do not re-focus every attempt
+        // Outline only; do not re-focus every attempt / never focus native Close
         markEscape(target);
         if (ageNativeTapCount === 1) focusEscape(target, true);
         nativeTap(target);
         hardClick(target);
       }
-      if (ageNativeTapCount >= 5 || !window.__hammyAgeGateVisible) {
+      if (ageNativeTapCount >= 8 || !window.__hammyAgeGateVisible) {
         ageAutoClicked = true;
         ageClickScheduled = false;
         if (ageNativeTapTimer) {
@@ -675,9 +729,9 @@ object PlayerChromeJs {
         }
       }
     }
-    // First tap soon, then every 800ms up to 5 total
-    setTimeout(oneTap, 200);
-    ageNativeTapTimer = setInterval(oneTap, 800);
+    // Immediate first tap, then every ~700ms up to 8 total (center of red CTA)
+    setTimeout(oneTap, 0);
+    ageNativeTapTimer = setInterval(oneTap, 700);
   }
 
   function pollAgeGate() {
