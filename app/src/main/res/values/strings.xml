@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hammy</string>
+    <string name="age_title">Adults Only (18+)</string>
+    <string name="age_message">This app opens the public xHamster website in a TV-friendly browser. You must be 18 or older to continue.</string>
+    <string name="continue_label">Continue</string>
+    <string name="exit_label">Exit</string>
+    <string name="orientation_title">Choose orientation</string>
+    <string name="straight">Straight</string>
+    <string name="gay">Gay</string>
+    <string name="trans">Trans</string>
+    <string name="categories_title">Pick categories (up to 10)</string>
+    <string name="selected_count">Selected: %1$d / 10</string>
+    <string name="skip">Skip</string>
+    <string name="change_prefs">Change prefs</string>
+</resources>
