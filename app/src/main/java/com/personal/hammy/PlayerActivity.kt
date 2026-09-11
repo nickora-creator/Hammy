@@ -211,44 +211,57 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        // Back / Escape always leave the player (no customView hide-only loop)
-        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
-            exitPlayer()
-            return true
-        }
-        // Menu / Guide as alternate leanback escape hatch
-        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_GUIDE) {
-            exitPlayer()
-            return true
-        }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
-            // If Close has focus, let its click listener handle it
-            if (closeButton.isFocused) {
+    /**
+     * Intercept keys before the WebView (which consumes DPAD for scroll/focus).
+     * Seek / play-pause / exit must run here — onKeyDown is too late.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.action == KeyEvent.ACTION_DOWN) {
+            val keyCode = event.keyCode
+            // Back / Escape / Menu / Guide always leave the player
+            if (keyCode == KeyEvent.KEYCODE_BACK ||
+                keyCode == KeyEvent.KEYCODE_ESCAPE ||
+                keyCode == KeyEvent.KEYCODE_MENU ||
+                keyCode == KeyEvent.KEYCODE_GUIDE
+            ) {
                 exitPlayer()
                 return true
             }
-            webView.evaluateJavascript(
-                "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
-                null
-            )
-            return true
+            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+                if (closeButton.isFocused) {
+                    exitPlayer()
+                    return true
+                }
+                webView.evaluateJavascript(
+                    "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
+                    null
+                )
+                return true
+            }
+            // Close focused: let Left/Right/Up/Down move focus normally (no seek)
+            if (closeButton.isFocused &&
+                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
+            ) {
+                return super.dispatchKeyEvent(event)
+            }
+            if (isSeekBackKey(keyCode)) {
+                seekVideo(-10)
+                return true
+            }
+            if (isSeekForwardKey(keyCode)) {
+                seekVideo(10)
+                return true
+            }
+            // Up from WebView can move focus to Close for leanback users
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP && webView.hasFocus()) {
+                closeButton.requestFocus()
+                return true
+            }
         }
-        // Seek back / forward unless Close is focused (so Left can leave Close)
-        if (isSeekBackKey(keyCode) && !closeButton.isFocused) {
-            seekVideo(-10)
-            return true
-        }
-        if (isSeekForwardKey(keyCode) && !closeButton.isFocused) {
-            seekVideo(10)
-            return true
-        }
-        // Up from WebView can move focus to Close for leanback users
-        if (keyCode == KeyEvent.KEYCODE_DPAD_UP && webView.hasFocus()) {
-            closeButton.requestFocus()
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
+        return super.dispatchKeyEvent(event)
     }
 
     private fun isSeekBackKey(keyCode: Int): Boolean =

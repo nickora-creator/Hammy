@@ -242,9 +242,28 @@ object FocusInjectJs {
     } catch (e) { return false; }
   };
 
+  function softLockPageScroll() {
+    try {
+      if (!findMainVideo()) return;
+      if (document.body) document.body.style.overflow = 'hidden';
+      if (document.documentElement) document.documentElement.style.overflow = 'hidden';
+    } catch (e) {}
+  }
+
   function onKey(e) {
     updateRing();
     var code = e.keyCode || e.which;
+    var key = e.key || '';
+    // ArrowLeft / ArrowRight: seek when a video exists (stop page scroll)
+    if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
+      if (findRelatedVideo(document.activeElement) || findMainVideo()) {
+        e.preventDefault();
+        e.stopPropagation();
+        var delta = (code === 37 || key === 'ArrowLeft') ? -10 : 10;
+        window.__hammySeekVideo(delta);
+      }
+      return;
+    }
     // 13 Enter, 23 DPAD_CENTER (Android WebView), 32 Space
     if (code === 13 || code === 23 || code === 32) {
       var el = document.activeElement;
@@ -264,6 +283,7 @@ object FocusInjectJs {
       ensureHint();
     }
     prepVideos();
+    softLockPageScroll();
     updateRing();
   }
   window.__hammyFocusRefresh = refresh;
@@ -297,6 +317,7 @@ object FocusInjectJs {
   } catch (e) {}
 
   prepVideos();
+  softLockPageScroll();
   updateRing();
   // Brief initial OK/Enter hint, then auto-hide
   showHintBrief(DEFAULT_HINT, HINT_HIDE_MS);
