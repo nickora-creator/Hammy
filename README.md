@@ -1,28 +1,38 @@
 # Hammy
 
-Personal-use Fire TV / Android TV sideload app. A remote-friendly WebView shell over the public [xHamster](https://xhamster.com/) website.
+Personal-use Fire TV / Android TV sideload app. Native Leanback-style browse grid over public [xHamster](https://xhamster.com/) listing pages; playback uses a dedicated WebView for the official video page.
 
 **Package:** `com.personal.hammy`  
-**No scraping, no CDN bypass, no downloading, no unofficial APIs** — just the official site in a TV browser.
+**No scraping CDNs, no paywall bypass, no downloading, no unofficial APIs** — card metadata comes from the same public HTTPS listing HTML a browser would get (`window.initials`).
 
 ## Screens
 
 1. **18+ confirm** — Continue / Exit  
 2. **Orientation** — Straight / Gay / Trans (large DPAD cards)  
 3. **Categories** — ~25–40 popular categories shuffled each open; select up to 10; Continue or Skip  
-4. **Browse** — full-screen WebView + shortcut bar for Home, Change prefs, and selected categories  
+4. **Browse (native)** — focusable poster/thumbnail cards in a TV grid + shortcut bar (Home, Change prefs, selected categories)  
+5. **Player** — fullscreen WebView for that video’s official page URL only (focus-ring injection for terms/consent + controls)
 
 Preferences (orientation + categories) are stored in `SharedPreferences`.
 
-## WebView user agent
+## Listing data
+
+Browse loads official URLs such as:
+
+- `https://xhamster.com/categories/<slug>`
+- `https://xhamster.com/gay/categories/<slug>`
+- `https://xhamster.com/shemale/categories/<slug>`
+- orientation home pages
+
+and extracts publicly present `{title, thumb, url}` card fields. Empty/error states show a native message with **Retry**.
+
+## Player WebView user agent
 
 Desktop Chrome UA (Windows):
 
 ```
 Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
 ```
-
-Chosen so the site serves its desktop layout, which is easier to navigate on a TV-sized WebView than the mobile site.
 
 ## Build
 
@@ -58,15 +68,14 @@ adb install -r /workspace/hammy/app/build/outputs/apk/debug/app-debug.apk
 
 4. Launch **Hammy** from the Apps row / Leanback launcher.
 
-
 ## Remote focus (Fire TV D-pad)
 
-Browse WebView injects strong `:focus` CSS plus a floating lime/cyan ring that tracks `document.activeElement` (helps on consent/terms overlays). Videos get `tabindex`, enlarged control focus styles, and Center/Enter play-pause with an on-screen hint. Native AgeGate / Orientation / Categories use thicker focus borders and scale-up.
+Browse uses native focusable cards (scale + lime/cyan border). Player WebView injects strong `:focus` CSS plus a floating ring that tracks `document.activeElement` (helps on consent/terms overlays). Videos get `tabindex`, enlarged control focus styles, and Center/Enter play-pause with an on-screen hint. Native AgeGate / Orientation / Categories use thicker focus borders and scale-up.
 
 ## Hardware Back
 
-- If the WebView has history → `goBack()`  
-- Otherwise → finish browse activity  
+- **Player:** WebView history → `goBack()`; otherwise finish player  
+- **Browse:** finish browse activity  
 
 ## License / use
 

@@ -13,4 +13,8 @@
     <string name="selected_count">Selected: %1$d / 10</string>
     <string name="skip">Skip</string>
     <string name="change_prefs">Change prefs</string>
+    <string name="home">Home</string>
+    <string name="retry">Retry</string>
+    <string name="load_failed">Could not load previews. Check your connection and try again.</string>
+    <string name="video_thumb">Video thumbnail</string>
 </resources>
