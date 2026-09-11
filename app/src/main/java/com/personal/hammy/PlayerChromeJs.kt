@@ -4,11 +4,12 @@ package com.personal.hammy
  * Lite player assist injected into the official video page WebView.
  *
  * Goal: let the site's own player work like a normal WebView. Find the largest
- * <video>, gently try play() + scroll-into-view, and continuously poll for the
- * site's own Skip Ads / Skip / Skip Ad control. When it appears: focus + outline,
- * notify Kotlin via HammyBridge, and auto-click once after a short delay.
- * Does NOT reparent the video, hide body siblings, force fullscreen CSS, or run
- * an aggressive ad classifier.
+ * <video>, gently try play() + scroll-into-view, and continuously poll for:
+ *   1) Age-gate / 18+ confirm controls (priority)
+ *   2) Site's own Skip Ads / Skip / Skip Ad control
+ * When either appears: focus + outline, notify Kotlin via HammyBridge, and
+ * auto-click once after a short delay. Does NOT reparent the video, hide body
+ * siblings, force fullscreen CSS, or run an aggressive ad classifier.
  *
  * Focus-ring / Center play-pause stay in [FocusInjectJs]. Native Close + Back/Menu
  * always finish() from PlayerActivity.
@@ -19,12 +20,13 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV5) {
+  if (window.__hammyChromeV6) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV5 = true;
+  window.__hammyChromeV6 = true;
   // Clear stale chrome flags so older injects cannot fight the lite assist
+  try { delete window.__hammyChromeV5; } catch(e) {}
   try { delete window.__hammyChromeV4; } catch(e) {}
   try { delete window.__hammyChromeV3; } catch(e) {}
   try { delete window.__hammyChromeV2; } catch(e) {}
@@ -33,12 +35,18 @@ object PlayerChromeJs {
   var unmuted = false;
   var skipAutoClicked = false;
   var skipClickScheduled = false;
+  var ageAutoClicked = false;
+  var ageClickScheduled = false;
   var lastPlayAt = 0;
   var moTimer = null;
   var pollTimer = null;
   var lastSkipEl = null;
-  var lastReportedVisible = null;
+  var lastAgeEl = null;
+  var lastReportedSkip = null;
+  var lastReportedAge = null;
   window.__hammySkipVisible = false;
+  window.__hammyAgeGateVisible = false;
+  window.__hammyBlockingCtaVisible = false;
 
   function ensureLiteStyle() {
     var s = document.getElementById(STYLE_ID);
@@ -51,7 +59,7 @@ object PlayerChromeJs {
     s.textContent = [
       /* Keep focus helpers above page chrome; no body-sibling hide, no forced FS */
       '#hammy-focus-ring, #hammy-video-hint { z-index: 2147483647 !important; }',
-      /* Visible Skip / Close-ad controls: focusable outline + high z-index */
+      /* Visible Skip / Age-gate / Close-ad controls: focusable outline + high z-index */
       '.hammy-escape-btn {',
       '  outline: 4px solid #00E5FF !important;',
       '  outline-offset: 3px !important;',
@@ -174,6 +182,22 @@ object PlayerChromeJs {
     return bits.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
+  function ancestorContext(el, depth) {
+    var bits = [];
+    var cur = el;
+    var max = typeof depth === 'number' ? depth : 4;
+    for (var i = 0; i < max && cur; i++) {
+      try {
+        bits.push(cur.id || '');
+        bits.push((cur.className && cur.className.toString) ? cur.className.toString() : '');
+        bits.push(cur.getAttribute && (cur.getAttribute('aria-label') || '') || '');
+        bits.push(cur.getAttribute && (cur.getAttribute('data-role') || '') || '');
+      } catch (e) {}
+      cur = cur.parentElement;
+    }
+    return bits.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
   function isVisibleClickable(el) {
     if (!el || !el.getBoundingClientRect) return false;
     try {
@@ -187,6 +211,41 @@ object PlayerChromeJs {
     } catch (e) {
       return false;
     }
+  }
+
+  function findAgeGateControls() {
+    var out = [];
+    var candidates = [];
+    try {
+      candidates = document.querySelectorAll(
+        'button, a, [role="button"], input[type="button"], input[type="submit"], div[tabindex], span[tabindex],' +
+        ' [class*="age" i], [id*="age" i], [class*="gate" i], [id*="gate" i],' +
+        ' [class*="consent" i], [id*="consent" i], [aria-label*="18" i], [aria-label*="age" i]'
+      );
+    } catch (e) {
+      return out;
+    }
+    // Strong: I'm 18 / I am 18 / 18 or older / 18+
+    var strongRe = /\b(i['’]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+)\b/i;
+    // Soft CTAs that need age/gate context
+    var softCtaRe = /\b(enter|i\s+agree|accept|continue|confirm)\b/i;
+    var ageCtxRe = /\b(age|gate|18|adult|nsfw|mature|over.?18|confirm.?age|age.?verif|disclaimer)\b/i;
+    for (var i = 0; i < candidates.length; i++) {
+      var el = candidates[i];
+      if (!isVisibleClickable(el)) continue;
+      var label = normalizeLabel(el);
+      if (!label) continue;
+      // Do not treat skip-ad as age gate
+      if (/\bskip(\s+ads?)?\b/i.test(label)) continue;
+      // Avoid cookie banner accept-all unless age also present
+      if (/\b(cookie|subscribe|sign in|login|register|sign up)\b/i.test(label) && !strongRe.test(label)) continue;
+      var strong = strongRe.test(label);
+      var soft = softCtaRe.test(label);
+      var ctx = ageCtxRe.test(label) || ageCtxRe.test(ancestorContext(el, 5));
+      if (!(strong || (soft && ctx))) continue;
+      out.push({ el: el, exact: strong, clearlyAge: strong || (soft && ctx), label: label });
+    }
+    return out;
   }
 
   function findSkipControls() {
@@ -222,15 +281,38 @@ object PlayerChromeJs {
     return out;
   }
 
+  function notifyAgeGateVisible(visible) {
+    window.__hammyAgeGateVisible = !!visible;
+    window.__hammyBlockingCtaVisible = !!(visible || window.__hammySkipVisible);
+    if (lastReportedAge === !!visible) return;
+    lastReportedAge = !!visible;
+    try {
+      if (window.HammyBridge && typeof window.HammyBridge.ageGateVisible === 'function') {
+        window.HammyBridge.ageGateVisible(!!visible);
+      }
+    } catch (e) {}
+    try {
+      if (window.HammyBridge && typeof window.HammyBridge.blockingCtaVisible === 'function') {
+        window.HammyBridge.blockingCtaVisible(!!(visible || window.__hammySkipVisible));
+      }
+    } catch (e2) {}
+  }
+
   function notifySkipVisible(visible) {
     window.__hammySkipVisible = !!visible;
-    if (lastReportedVisible === !!visible) return;
-    lastReportedVisible = !!visible;
+    window.__hammyBlockingCtaVisible = !!(visible || window.__hammyAgeGateVisible);
+    if (lastReportedSkip === !!visible) return;
+    lastReportedSkip = !!visible;
     try {
       if (window.HammyBridge && typeof window.HammyBridge.skipVisible === 'function') {
         window.HammyBridge.skipVisible(!!visible);
       }
     } catch (e) {}
+    try {
+      if (window.HammyBridge && typeof window.HammyBridge.blockingCtaVisible === 'function') {
+        window.HammyBridge.blockingCtaVisible(!!(visible || window.__hammyAgeGateVisible));
+      }
+    } catch (e2) {}
   }
 
   function clickEl(el) {
@@ -248,7 +330,7 @@ object PlayerChromeJs {
     }
   }
 
-  function focusSkip(el) {
+  function focusEscape(el) {
     if (!el) return;
     try {
       el.setAttribute('tabindex', '0');
@@ -264,6 +346,16 @@ object PlayerChromeJs {
     } catch (e1) {}
   }
 
+  function pickBestAge(controls) {
+    if (!controls || !controls.length) return null;
+    var best = controls[0];
+    for (var i = 0; i < controls.length; i++) {
+      if (controls[i].exact) { best = controls[i]; break; }
+      if (controls[i].clearlyAge) best = controls[i];
+    }
+    return best;
+  }
+
   function pickBestSkip(controls) {
     if (!controls || !controls.length) return null;
     var best = controls[0];
@@ -272,6 +364,45 @@ object PlayerChromeJs {
       if (controls[i].exact) best = controls[i];
     }
     return best;
+  }
+
+  function pollAgeGate() {
+    var controls = findAgeGateControls();
+    var best = pickBestAge(controls);
+    if (!best) {
+      lastAgeEl = null;
+      notifyAgeGateVisible(false);
+      ageAutoClicked = false;
+      ageClickScheduled = false;
+      return false;
+    }
+
+    lastAgeEl = best.el;
+    notifyAgeGateVisible(true);
+    // While age gate is up, clear skip focus so priority stays on age CTA
+    lastSkipEl = null;
+    notifySkipVisible(false);
+    focusEscape(best.el);
+
+    // Auto-click once after ~300ms if still visible
+    if (!ageAutoClicked && !ageClickScheduled && best.clearlyAge) {
+      ageClickScheduled = true;
+      var target = best.el;
+      setTimeout(function() {
+        ageClickScheduled = false;
+        if (ageAutoClicked) return;
+        if (!isVisibleClickable(target)) return;
+        var still = findAgeGateControls();
+        var match = false;
+        for (var j = 0; j < still.length; j++) {
+          if (still[j].el === target) { match = true; break; }
+        }
+        if (!match) return;
+        ageAutoClicked = true;
+        clickEl(target);
+      }, 300);
+    }
+    return true;
   }
 
   function pollSkip() {
@@ -288,7 +419,7 @@ object PlayerChromeJs {
 
     lastSkipEl = best.el;
     notifySkipVisible(true);
-    focusSkip(best.el);
+    focusEscape(best.el);
 
     // Auto-click once after short delay if still visible
     if (!skipAutoClicked && !skipClickScheduled && best.clearlySkipAd) {
@@ -312,6 +443,24 @@ object PlayerChromeJs {
     }
   }
 
+  /** Priority: age gate first, else skip. */
+  function pollBlockingCtas() {
+    if (pollAgeGate()) return;
+    pollSkip();
+  }
+
+  window.__hammyClickAgeGate = function() {
+    var el = lastAgeEl;
+    if (!el || !isVisibleClickable(el)) {
+      var controls = findAgeGateControls();
+      var best = pickBestAge(controls);
+      el = best ? best.el : null;
+    }
+    if (!el) return false;
+    focusEscape(el);
+    return clickEl(el);
+  };
+
   window.__hammyClickSkip = function() {
     var el = lastSkipEl;
     if (!el || !isVisibleClickable(el)) {
@@ -320,11 +469,24 @@ object PlayerChromeJs {
       el = best ? best.el : null;
     }
     if (!el) return false;
-    focusSkip(el);
+    focusEscape(el);
     return clickEl(el);
   };
 
-  window.__hammyHelpEscapeAd = pollSkip;
+  /** Prefer age gate, then skip — used by DPAD_CENTER from Kotlin / FocusInjectJs. */
+  window.__hammyClickBlockingCta = function() {
+    if (window.__hammyAgeGateVisible || lastAgeEl) {
+      if (window.__hammyClickAgeGate()) return true;
+    }
+    if (window.__hammySkipVisible || lastSkipEl) {
+      if (window.__hammyClickSkip()) return true;
+    }
+    // Last-chance rescan
+    if (window.__hammyClickAgeGate()) return true;
+    return window.__hammyClickSkip();
+  };
+
+  window.__hammyHelpEscapeAd = pollBlockingCtas;
 
   function apply() {
     ensureLiteStyle();
@@ -335,7 +497,7 @@ object PlayerChromeJs {
       tryPlay(video);
     }
 
-    pollSkip();
+    pollBlockingCtas();
   }
 
   window.__hammyChromeRefresh = apply;
@@ -346,10 +508,10 @@ object PlayerChromeJs {
   setTimeout(apply, 2500);
   setTimeout(apply, 5000);
 
-  // Continuous poll ~500ms so late-appearing Skip Ads is caught quickly
+  // Continuous poll ~500ms so late-appearing age gate / Skip Ads is caught quickly
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(function() {
-    try { pollSkip(); } catch (eP) {}
+    try { pollBlockingCtas(); } catch (eP) {}
   }, 500);
 
   try {
@@ -357,7 +519,7 @@ object PlayerChromeJs {
       if (moTimer) clearTimeout(moTimer);
       moTimer = setTimeout(function() {
         moTimer = null;
-        try { pollSkip(); } catch (eM) {}
+        try { pollBlockingCtas(); } catch (eM) {}
       }, 200);
     });
     mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });

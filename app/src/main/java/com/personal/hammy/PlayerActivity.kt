@@ -31,8 +31,9 @@ import androidx.core.view.WindowInsetsControllerCompat
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
  * escape ad traps even if the page WebView is stuck.
  *
- * When the site's Skip Ads control is visible (HammyBridge.skipVisible), DPAD_CENTER
- * clicks it and LEFT/RIGHT do not seek.
+ * When an age-gate / 18+ confirm or Skip Ads control is visible
+ * (HammyBridge.ageGateVisible / skipVisible), DPAD_CENTER activates that CTA
+ * (age gate first) and LEFT/RIGHT do not seek.
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -44,6 +45,9 @@ class PlayerActivity : AppCompatActivity() {
     @Volatile
     private var skipAdsVisible = false
 
+    @Volatile
+    private var ageGateVisible = false
+
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var fullScreenContainer: FrameLayout? = null
@@ -53,13 +57,30 @@ class PlayerActivity : AppCompatActivity() {
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
     /**
-     * Bridge from injected JS → Kotlin so key handling can gate on Skip Ads visibility
-     * without racing evaluateJavascript round-trips.
+     * Bridge from injected JS → Kotlin so key handling can gate on age-gate /
+     * Skip Ads visibility without racing evaluateJavascript round-trips.
      */
     inner class HammyBridge {
         @JavascriptInterface
         fun skipVisible(visible: Boolean) {
             skipAdsVisible = visible
+        }
+
+        @JavascriptInterface
+        fun ageGateVisible(visible: Boolean) {
+            ageGateVisible = visible
+        }
+
+        /**
+         * Aggregate blocking CTA signal (age or skip). Specific
+         * [ageGateVisible] / [skipVisible] remain authoritative for key routing.
+         */
+        @JavascriptInterface
+        fun blockingCtaVisible(visible: Boolean) {
+            // Mirror only when specifics have not already reported; prefer age/skip hooks.
+            if (visible && !ageGateVisible && !skipAdsVisible) {
+                skipAdsVisible = true
+            }
         }
     }
 
@@ -232,7 +253,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /**
      * Intercept keys before the WebView (which consumes DPAD for scroll/focus).
-     * Seek / play-pause / exit / Skip Ads must run here — onKeyDown is too late.
+     * Seek / play-pause / exit / age-gate / Skip Ads must run here — onKeyDown is too late.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
@@ -251,8 +272,9 @@ class PlayerActivity : AppCompatActivity() {
                     exitPlayer()
                     return true
                 }
-                if (skipAdsVisible) {
-                    clickSkipAds()
+                // Priority: age gate first, then Skip Ads, else play-pause
+                if (ageGateVisible || skipAdsVisible) {
+                    clickBlockingCta()
                     return true
                 }
                 webView.evaluateJavascript(
@@ -270,8 +292,8 @@ class PlayerActivity : AppCompatActivity() {
             ) {
                 return super.dispatchKeyEvent(event)
             }
-            // Skip Ads visible: do not seek — keep JS focus on skip / let WebView handle
-            if (skipAdsVisible &&
+            // Age gate or Skip Ads visible: do not seek — keep JS focus on CTA
+            if ((ageGateVisible || skipAdsVisible) &&
                 (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
                     keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
             ) {
@@ -301,10 +323,15 @@ class PlayerActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
-    private fun clickSkipAds() {
+    /** Prefer age-gate CTA, then Skip Ads (matches JS __hammyClickBlockingCta). */
+    private fun clickBlockingCta() {
         if (!::webView.isInitialized) return
         webView.evaluateJavascript(
-            "(function(){try{if(window.__hammyClickSkip){return window.__hammyClickSkip();}}catch(e){}return false;})();",
+            "(function(){try{" +
+                "if(window.__hammyClickBlockingCta){return window.__hammyClickBlockingCta();}" +
+                "if(window.__hammyAgeGateVisible&&window.__hammyClickAgeGate){return window.__hammyClickAgeGate();}" +
+                "if(window.__hammyClickSkip){return window.__hammyClickSkip();}" +
+                "}catch(e){}return false;})();",
             null
         )
     }
@@ -335,6 +362,7 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         injectGeneration++
         skipAdsVisible = false
+        ageGateVisible = false
         mainHandler.removeCallbacksAndMessages(null)
         if (::webView.isInitialized) {
             webView.destroy()

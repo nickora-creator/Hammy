@@ -254,13 +254,15 @@ object FocusInjectJs {
     updateRing();
     var code = e.keyCode || e.which;
     var key = e.key || '';
-    // While site Skip Ads is visible, do not seek / toggle — keep focus on skip
-    if (window.__hammySkipVisible) {
+    // While age gate or Skip Ads is visible, do not seek / toggle — keep focus on CTA
+    // Priority: age gate first, then skip
+    var blocking = !!(window.__hammyAgeGateVisible || window.__hammySkipVisible || window.__hammyBlockingCtaVisible);
+    if (blocking) {
       if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
         try {
-          var skipEl = document.querySelector('.hammy-escape-btn');
-          if (skipEl) {
-            try { skipEl.focus({ preventScroll: true }); } catch (eF) { skipEl.focus(); }
+          var ctaEl = document.querySelector('.hammy-escape-btn');
+          if (ctaEl) {
+            try { ctaEl.focus({ preventScroll: true }); } catch (eF) { ctaEl.focus(); }
           }
         } catch (eS) {}
         e.preventDefault();
@@ -269,7 +271,15 @@ object FocusInjectJs {
       }
       if (code === 13 || code === 23 || code === 32) {
         try {
-          if (window.__hammyClickSkip && window.__hammyClickSkip()) {
+          var clicked = false;
+          if (window.__hammyClickBlockingCta) {
+            clicked = !!window.__hammyClickBlockingCta();
+          } else if (window.__hammyAgeGateVisible && window.__hammyClickAgeGate) {
+            clicked = !!window.__hammyClickAgeGate();
+          } else if (window.__hammyClickSkip) {
+            clicked = !!window.__hammyClickSkip();
+          }
+          if (clicked) {
             e.preventDefault();
             e.stopPropagation();
           }
