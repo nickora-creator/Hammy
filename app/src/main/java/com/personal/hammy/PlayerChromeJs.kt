@@ -8,7 +8,7 @@ package com.personal.hammy
  *   1) Age-gate / 18+ confirm controls (priority)
  *   2) Site's own Skip Ads / Skip / Skip Ad control
  * When either appears: outline once, notify Kotlin via HammyBridge, and
- * auto-activate via native [HammyBridge.tapAt] (5–8× / ~700ms) with hardClick
+ * auto-activate via native [HammyBridge.tapAt] (≤3× / ~1200ms) with hardClick
  * as secondary. Prefers the exact age-enter CTA / largest red button.
  * Does NOT reparent the video, hide body siblings, force fullscreen
  * CSS, or run an aggressive ad classifier.
@@ -46,6 +46,7 @@ object PlayerChromeJs {
     } catch (e) {}
   }
   // Small allowlist — do not wipe storage
+  // Never set parental-control=1 — that cookie shows age-assurance and can blank the page
   var keys = [
     'age_confirmed', 'ageConfirmed', 'age_verified', 'ageVerified',
     'age_gate', 'ageGate', 'ageGateConfirmed', 'age_gate_confirmed',
@@ -53,7 +54,7 @@ object PlayerChromeJs {
     'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
     'cookie_accept', 'cookie_accept_v2', 'cookiesAccepted', 'disclaimerAccepted',
     'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed',
-    'ageProtectAgreement', 'parental-control', 'age_protect_agreement'
+    'ageProtectAgreement', 'age_protect_agreement'
   ];
   try {
     for (var i = 0; i < keys.length; i++) {
@@ -66,6 +67,17 @@ object PlayerChromeJs {
       setCookie(k, 'true');
     }
   } catch (eAll) {}
+  try {
+    document.cookie = 'parental-control=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    try {
+      var host = location.hostname || '';
+      if (host.indexOf('xhamster') !== -1) {
+        document.cookie = 'parental-control=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.xhamster.com';
+      }
+    } catch (eExpD) {}
+    try { window.localStorage.removeItem('parental-control'); } catch (eLs) {}
+    try { window.sessionStorage.removeItem('parental-control'); } catch (eSs) {}
+  } catch (eExp) {}
   // Honor any age-like keys already present in storage (set them true)
   try {
     var stores = [window.localStorage, window.sessionStorage];
@@ -112,12 +124,13 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV9) {
+  if (window.__hammyChromeV10) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV9 = true;
-  try { delete window.__hammyChromeV8; } catch(e) {}
+  window.__hammyChromeV10 = true;
+  try { delete window.__hammyChromeV9; } catch(e) {}
+    try { delete window.__hammyChromeV8; } catch(e) {}
     try { delete window.__hammyChromeV7; } catch(e) {}
   try { delete window.__hammyChromeV6; } catch(e) {}
   try { delete window.__hammyChromeV5; } catch(e) {}
@@ -160,7 +173,7 @@ object PlayerChromeJs {
         'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
         'cookie_accept', 'cookie_accept_v2', 'cookiesAccepted', 'disclaimerAccepted',
         'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed',
-        'ageProtectAgreement', 'parental-control', 'age_protect_agreement'
+        'ageProtectAgreement', 'age_protect_agreement'
       ];
       for (var i = 0; i < keys.length; i++) {
         var k = keys[i];
@@ -168,6 +181,16 @@ object PlayerChromeJs {
         setStore(window.sessionStorage, k, '1');
         setCookie(k, '1');
       }
+      try {
+        document.cookie = 'parental-control=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+        try {
+          if ((location.hostname || '').indexOf('xhamster') !== -1) {
+            document.cookie = 'parental-control=; path=/; max-age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; domain=.xhamster.com';
+          }
+        } catch (eExpD) {}
+        try { window.localStorage.removeItem('parental-control'); } catch (eLs) {}
+        try { window.sessionStorage.removeItem('parental-control'); } catch (eSs) {}
+      } catch (eExp) {}
       try {
         var stores = [window.localStorage, window.sessionStorage];
         for (var s = 0; s < stores.length; s++) {
@@ -718,9 +741,10 @@ object PlayerChromeJs {
         markEscape(target);
         if (ageNativeTapCount === 1) focusEscape(target, true);
         nativeTap(target);
-        hardClick(target);
+        // hardClick only on first attempt — spam can blank the WebView
+        if (ageNativeTapCount === 1) hardClick(target);
       }
-      if (ageNativeTapCount >= 8 || !window.__hammyAgeGateVisible) {
+      if (ageNativeTapCount >= 3 || !window.__hammyAgeGateVisible) {
         ageAutoClicked = true;
         ageClickScheduled = false;
         if (ageNativeTapTimer) {
@@ -729,9 +753,9 @@ object PlayerChromeJs {
         }
       }
     }
-    // Immediate first tap, then every ~700ms up to 8 total (center of red CTA)
-    setTimeout(oneTap, 0);
-    ageNativeTapTimer = setInterval(oneTap, 700);
+    // Gentle: one immediate tap, then up to 2 more at ~1200ms (was 8×/700ms)
+    setTimeout(oneTap, 250);
+    ageNativeTapTimer = setInterval(oneTap, 1200);
   }
 
   function pollAgeGate() {
