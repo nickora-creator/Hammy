@@ -58,6 +58,11 @@ adb install -r /workspace/hammy/app/build/outputs/apk/debug/app-debug.apk
 
 4. Launch **Hammy** from the Apps row / Leanback launcher.
 
+
+## Remote focus (Fire TV D-pad)
+
+Browse WebView injects strong `:focus` CSS plus a floating lime/cyan ring that tracks `document.activeElement` (helps on consent/terms overlays). Videos get `tabindex`, enlarged control focus styles, and Center/Enter play-pause with an on-screen hint. Native AgeGate / Orientation / Categories use thicker focus borders and scale-up.
+
 ## Hardware Back
 
 - If the WebView has history → `goBack()`  

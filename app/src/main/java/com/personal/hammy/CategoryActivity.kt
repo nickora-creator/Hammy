@@ -3,7 +3,6 @@ package com.personal.hammy
 import android.content.Intent
 import android.os.Bundle
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
@@ -30,6 +29,11 @@ class CategoryActivity : AppCompatActivity() {
         countLabel = findViewById(R.id.countLabel)
         updateCount()
 
+        val btnSkip = findViewById<Button>(R.id.btnSkip)
+        val btnContinue = findViewById<Button>(R.id.btnContinue)
+        TvFocus.attach(btnSkip, scale = 1.1f)
+        TvFocus.attach(btnContinue, scale = 1.1f)
+
         val grid = findViewById<RecyclerView>(R.id.categoryGrid)
         grid.layoutManager = GridLayoutManager(this, 4)
         grid.adapter = CategoryAdapter(items, selected) { category, nowSelected ->
@@ -49,10 +53,10 @@ class CategoryActivity : AppCompatActivity() {
             }
         }
 
-        findViewById<Button>(R.id.btnSkip).setOnClickListener {
+        btnSkip.setOnClickListener {
             finishSetup(emptySet())
         }
-        findViewById<Button>(R.id.btnContinue).setOnClickListener {
+        btnContinue.setOnClickListener {
             finishSetup(selected.toSet())
         }
     }
@@ -81,6 +85,7 @@ class CategoryActivity : AppCompatActivity() {
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
             val view = LayoutInflater.from(parent.context)
                 .inflate(R.layout.item_category, parent, false) as Button
+            TvFocus.attach(view, scale = 1.1f)
             return VH(view)
         }
 

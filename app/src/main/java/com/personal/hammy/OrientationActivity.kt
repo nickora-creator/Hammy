@@ -16,14 +16,15 @@ class OrientationActivity : AppCompatActivity() {
             finish()
         }
 
-        findViewById<Button>(R.id.cardStraight).setOnClickListener {
-            pick(Prefs.Orientation.STRAIGHT)
-        }
-        findViewById<Button>(R.id.cardGay).setOnClickListener {
-            pick(Prefs.Orientation.GAY)
-        }
-        findViewById<Button>(R.id.cardTrans).setOnClickListener {
-            pick(Prefs.Orientation.TRANS)
-        }
+        val straight = findViewById<Button>(R.id.cardStraight)
+        val gay = findViewById<Button>(R.id.cardGay)
+        val trans = findViewById<Button>(R.id.cardTrans)
+        TvFocus.attach(straight, scale = 1.12f)
+        TvFocus.attach(gay, scale = 1.12f)
+        TvFocus.attach(trans, scale = 1.12f)
+
+        straight.setOnClickListener { pick(Prefs.Orientation.STRAIGHT) }
+        gay.setOnClickListener { pick(Prefs.Orientation.GAY) }
+        trans.setOnClickListener { pick(Prefs.Orientation.TRANS) }
     }
 }

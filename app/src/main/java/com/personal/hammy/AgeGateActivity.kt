@@ -22,12 +22,17 @@ class AgeGateActivity : AppCompatActivity() {
 
         setContentView(R.layout.activity_age_gate)
 
-        findViewById<Button>(R.id.btnContinue).setOnClickListener {
+        val btnContinue = findViewById<Button>(R.id.btnContinue)
+        val btnExit = findViewById<Button>(R.id.btnExit)
+        TvFocus.attach(btnContinue, scale = 1.1f)
+        TvFocus.attach(btnExit, scale = 1.1f)
+
+        btnContinue.setOnClickListener {
             Prefs.setAgeConfirmed(this, true)
             startActivity(Intent(this, OrientationActivity::class.java))
             finish()
         }
-        findViewById<Button>(R.id.btnExit).setOnClickListener {
+        btnExit.setOnClickListener {
             finishAffinity()
         }
     }
