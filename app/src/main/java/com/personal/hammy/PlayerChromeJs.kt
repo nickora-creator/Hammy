@@ -7,9 +7,10 @@ package com.personal.hammy
  * <video>, gently try play() + scroll-into-view, and continuously poll for:
  *   1) Age-gate / 18+ confirm controls (priority)
  *   2) Site's own Skip Ads / Skip / Skip Ad control
- * When either appears: focus + outline, notify Kotlin via HammyBridge, and
- * auto-click once after a short delay. Does NOT reparent the video, hide body
- * siblings, force fullscreen CSS, or run an aggressive ad classifier.
+ * When either appears: outline once, notify Kotlin via HammyBridge, and
+ * auto-activate via native [HammyBridge.tapAt] (up to 5× / 800ms) with hardClick
+ * as secondary. Does NOT reparent the video, hide body siblings, force fullscreen
+ * CSS, or run an aggressive ad classifier.
  *
  * Focus-ring / Center play-pause stay in [FocusInjectJs]. Native Close + Back/Menu
  * always finish() from PlayerActivity.
@@ -17,20 +18,168 @@ package com.personal.hammy
 object PlayerChromeJs {
     val SCRIPT: String = buildScript()
 
+    /** Early inject on page start: set common age-confirm storage/cookie flags. */
+    private val AGE_BYPASS = """
+(function(){
+  if (window.__hammyAgeBypassV1) return;
+  window.__hammyAgeBypassV1 = true;
+  function setStore(store, key, val) {
+    try { if (store) store.setItem(key, val); } catch (e) {}
+  }
+  function setCookie(name, val) {
+    try {
+      var v = encodeURIComponent(val);
+      var base = name + '=' + v + '; path=/; max-age=31536000; SameSite=Lax';
+      document.cookie = base;
+      try {
+        var host = location.hostname || '';
+        if (host.indexOf('xhamster') !== -1) {
+          document.cookie = base + '; domain=.xhamster.com';
+        }
+      } catch (eD) {}
+    } catch (e) {}
+  }
+  // Small allowlist — do not wipe storage
+  var keys = [
+    'age_confirmed', 'ageConfirmed', 'age_verified', 'ageVerified',
+    'age_gate', 'ageGate', 'ageGateConfirmed', 'age_gate_confirmed',
+    'confirmAge', 'confirm_age', 'isAdult', 'is_adult', 'adult',
+    'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
+    'cookie_accept', 'cookiesAccepted', 'disclaimerAccepted',
+    'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed'
+  ];
+  try {
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      setStore(window.localStorage, k, '1');
+      setStore(window.localStorage, k, 'true');
+      setStore(window.sessionStorage, k, '1');
+      setStore(window.sessionStorage, k, 'true');
+      setCookie(k, '1');
+      setCookie(k, 'true');
+    }
+  } catch (eAll) {}
+  // Honor any age-like keys already present in storage (set them true)
+  try {
+    var stores = [window.localStorage, window.sessionStorage];
+    for (var s = 0; s < stores.length; s++) {
+      var store = stores[s];
+      if (!store) continue;
+      for (var j = 0; j < store.length; j++) {
+        var ek = store.key(j);
+        if (!ek) continue;
+        var low = String(ek).toLowerCase();
+        if (/(age|adult|18|confirm|disclaimer|mature|nsfw)/.test(low)) {
+          try { store.setItem(ek, '1'); } catch (eS) {}
+        }
+      }
+    }
+  } catch (eScan) {}
+  // window.initials age flags when publicly present (no media scrape)
+  try {
+    var init = window.initials;
+    if (init && typeof init === 'object') {
+      var paths = [
+        ['ageVerified'], ['ageConfirmed'], ['user', 'ageVerified'],
+        ['user', 'isAdult'], ['settings', 'ageConfirmed'],
+        ['xh', 'ageVerified'], ['extras', 'ageVerified']
+      ];
+      for (var p = 0; p < paths.length; p++) {
+        try {
+          var cur = init;
+          var path = paths[p];
+          for (var n = 0; n < path.length - 1; n++) {
+            if (!cur[path[n]]) cur[path[n]] = {};
+            cur = cur[path[n]];
+          }
+          cur[path[path.length - 1]] = true;
+        } catch (eP) {}
+      }
+    }
+  } catch (eInit) {}
+})();
+""".trimIndent()
+
+    val AGE_BYPASS_SCRIPT: String = AGE_BYPASS
+
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV7) {
+  if (window.__hammyChromeV8) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV7 = true;
-  // Clear stale chrome flags so older injects cannot fight the lite assist
+  window.__hammyChromeV8 = true;
+  try { delete window.__hammyChromeV7; } catch(e) {}
   try { delete window.__hammyChromeV6; } catch(e) {}
   try { delete window.__hammyChromeV5; } catch(e) {}
   try { delete window.__hammyChromeV4; } catch(e) {}
   try { delete window.__hammyChromeV3; } catch(e) {}
   try { delete window.__hammyChromeV2; } catch(e) {}
+
+  // Re-run age bypass on full chrome inject (page may have overwritten storage)
+  try {
+    window.__hammyAgeBypassV1 = false;
+  } catch (eB) {}
+  try {
+    /* inline early bypass again */
+    (function(){
+      function setStore(store, key, val) {
+        try { if (store) store.setItem(key, val); } catch (e) {}
+      }
+      function setCookie(name, val) {
+        try {
+          var v = encodeURIComponent(val);
+          var base = name + '=' + v + '; path=/; max-age=31536000; SameSite=Lax';
+          document.cookie = base;
+          try {
+            var host = location.hostname || '';
+            if (host.indexOf('xhamster') !== -1) {
+              document.cookie = base + '; domain=.xhamster.com';
+            }
+          } catch (eD) {}
+        } catch (e) {}
+      }
+      var keys = [
+        'age_confirmed', 'ageConfirmed', 'age_verified', 'ageVerified',
+        'age_gate', 'ageGate', 'ageGateConfirmed', 'age_gate_confirmed',
+        'confirmAge', 'confirm_age', 'isAdult', 'is_adult', 'adult',
+        'over18', 'over_18', 'eighteen', 'xh_age', 'xhAgeConfirmed',
+        'cookie_accept', 'cookiesAccepted', 'disclaimerAccepted',
+        'hasConfirmedAge', 'userAgeConfirmed', 'ageCheckPassed'
+      ];
+      for (var i = 0; i < keys.length; i++) {
+        var k = keys[i];
+        setStore(window.localStorage, k, '1');
+        setStore(window.sessionStorage, k, '1');
+        setCookie(k, '1');
+      }
+      try {
+        var stores = [window.localStorage, window.sessionStorage];
+        for (var s = 0; s < stores.length; s++) {
+          var store = stores[s];
+          if (!store) continue;
+          for (var j = 0; j < store.length; j++) {
+            var ek = store.key(j);
+            if (!ek) continue;
+            var low = String(ek).toLowerCase();
+            if (/(age|adult|18|confirm|disclaimer|mature|nsfw)/.test(low)) {
+              try { store.setItem(ek, '1'); } catch (eS) {}
+            }
+          }
+        }
+      } catch (eScan) {}
+      try {
+        var init = window.initials;
+        if (init && typeof init === 'object') {
+          try { init.ageVerified = true; } catch (e1) {}
+          try { init.ageConfirmed = true; } catch (e2) {}
+          try { if (!init.user) init.user = {}; init.user.ageVerified = true; init.user.isAdult = true; } catch (e3) {}
+        }
+      } catch (eInit) {}
+      window.__hammyAgeBypassV1 = true;
+    })();
+  } catch (eBy) {}
 
   var STYLE_ID = 'hammy-chrome-lite-css';
   var unmuted = false;
@@ -38,6 +187,9 @@ object PlayerChromeJs {
   var skipClickScheduled = false;
   var ageAutoClicked = false;
   var ageClickScheduled = false;
+  var ageFocusDone = false;
+  var ageNativeTapCount = 0;
+  var ageNativeTapTimer = null;
   var lastPlayAt = 0;
   var moTimer = null;
   var pollTimer = null;
@@ -45,6 +197,7 @@ object PlayerChromeJs {
   var lastAgeEl = null;
   var lastReportedSkip = null;
   var lastReportedAge = null;
+  var lastOutlinedAge = null;
   window.__hammySkipVisible = false;
   window.__hammyAgeGateVisible = false;
   window.__hammyBlockingCtaVisible = false;
@@ -58,9 +211,8 @@ object PlayerChromeJs {
     }
     var nl = String.fromCharCode(10);
     s.textContent = [
-      /* Keep focus helpers above page chrome; no body-sibling hide, no forced FS */
       '#hammy-focus-ring, #hammy-video-hint { z-index: 2147483647 !important; }',
-      /* Visible Skip / Age-gate / Close-ad controls: focusable outline + high z-index */
+      /* Stable outline — avoid transition thrashing / flash */
       '.hammy-escape-btn {',
       '  outline: 4px solid #00E5FF !important;',
       '  outline-offset: 3px !important;',
@@ -68,6 +220,7 @@ object PlayerChromeJs {
       '  position: relative !important;',
       '  z-index: 2147483600 !important;',
       '  pointer-events: auto !important;',
+      '  transition: none !important;',
       '}'
     ].join(nl);
   }
@@ -226,9 +379,7 @@ object PlayerChromeJs {
     } catch (e) {
       return out;
     }
-    // Strong: I'm 18 / I am 18 / 18 or older / 18+
     var strongRe = /\b(i['’]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+)\b/i;
-    // Soft CTAs that need age/gate context
     var softCtaRe = /\b(enter|i\s+agree|accept|continue|confirm)\b/i;
     var ageCtxRe = /\b(age|gate|18|adult|nsfw|mature|over.?18|confirm.?age|age.?verif|disclaimer)\b/i;
     for (var i = 0; i < candidates.length; i++) {
@@ -236,9 +387,7 @@ object PlayerChromeJs {
       if (!isVisibleClickable(el)) continue;
       var label = normalizeLabel(el);
       if (!label) continue;
-      // Do not treat skip-ad as age gate
       if (/\bskip(\s+ads?)?\b/i.test(label)) continue;
-      // Avoid cookie banner accept-all unless age also present
       if (/\b(cookie|subscribe|sign in|login|register|sign up)\b/i.test(label) && !strongRe.test(label)) continue;
       var strong = strongRe.test(label);
       var soft = softCtaRe.test(label);
@@ -335,6 +484,40 @@ object PlayerChromeJs {
     return el;
   }
 
+  function elementCenter(el) {
+    var cx = 0, cy = 0;
+    try {
+      var target = resolveClickTarget(el) || el;
+      var r = target.getBoundingClientRect();
+      cx = r.left + Math.max(r.width, 1) / 2;
+      cy = r.top + Math.max(r.height, 1) / 2;
+    } catch (e) {}
+    return { x: cx, y: cy };
+  }
+
+  /** Prefer native MotionEvent tap via Kotlin bridge; fall back to JS hardClick. */
+  function nativeTap(el) {
+    if (!el) return false;
+    try {
+      var c = elementCenter(el);
+      if (window.HammyBridge && typeof window.HammyBridge.tapAt === 'function') {
+        window.HammyBridge.tapAt(c.x, c.y);
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
+
+  function activateCta(el, doFocus) {
+    if (!el) return false;
+    if (doFocus) focusEscape(el, true);
+    else markEscape(el);
+    var tapped = nativeTap(el);
+    // Secondary: synthetic pointer/mouse/click sequence
+    hardClick(el);
+    return tapped || true;
+  }
+
   function firePointerMouseSequence(node, cx, cy) {
     if (!node) return false;
     var downOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
@@ -360,7 +543,6 @@ object PlayerChromeJs {
     return true;
   }
 
-  /** Full pointer/mouse/keyboard sequence — many age-gate CTAs ignore bare el.click(). */
   function hardClick(el) {
     if (!el) return false;
     try {
@@ -408,11 +590,25 @@ object PlayerChromeJs {
     return false;
   }
 
-  function focusEscape(el) {
+  /** Outline + tabindex without stealing focus (avoids focus flash loop). */
+  function markEscape(el) {
     if (!el) return;
     try {
       el.setAttribute('tabindex', '0');
       el.classList.add('hammy-escape-btn');
+    } catch (e1) {}
+  }
+
+  /**
+   * Focus once per element. [force] used for OK key / first sighting only.
+   * Repeated poll must NOT call focus again (causes highlight flash).
+   */
+  function focusEscape(el, force) {
+    if (!el) return;
+    markEscape(el);
+    var shouldFocus = !!force || !ageFocusDone || lastOutlinedAge !== el;
+    if (!shouldFocus) return;
+    try {
       try {
         el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
       } catch (eScroll) {
@@ -421,6 +617,8 @@ object PlayerChromeJs {
       try { el.focus({ preventScroll: true }); } catch (eF) {
         try { el.focus(); } catch (eF2) {}
       }
+      ageFocusDone = true;
+      lastOutlinedAge = el;
     } catch (e1) {}
   }
 
@@ -444,6 +642,44 @@ object PlayerChromeJs {
     return best;
   }
 
+  function scheduleAgeNativeTaps(el) {
+    if (ageClickScheduled || ageAutoClicked) return;
+    ageClickScheduled = true;
+    ageNativeTapCount = 0;
+    if (ageNativeTapTimer) {
+      try { clearInterval(ageNativeTapTimer); } catch (eT) {}
+      ageNativeTapTimer = null;
+    }
+    function oneTap() {
+      ageNativeTapCount++;
+      var target = el;
+      if (!isVisibleClickable(target)) {
+        var still = findAgeGateControls();
+        var best2 = pickBestAge(still);
+        target = best2 ? best2.el : null;
+        if (target) el = target;
+      }
+      if (target && isVisibleClickable(target)) {
+        // Outline only; do not re-focus every attempt
+        markEscape(target);
+        if (ageNativeTapCount === 1) focusEscape(target, true);
+        nativeTap(target);
+        hardClick(target);
+      }
+      if (ageNativeTapCount >= 5 || !window.__hammyAgeGateVisible) {
+        ageAutoClicked = true;
+        ageClickScheduled = false;
+        if (ageNativeTapTimer) {
+          try { clearInterval(ageNativeTapTimer); } catch (eC) {}
+          ageNativeTapTimer = null;
+        }
+      }
+    }
+    // First tap soon, then every 800ms up to 5 total
+    setTimeout(oneTap, 200);
+    ageNativeTapTimer = setInterval(oneTap, 800);
+  }
+
   function pollAgeGate() {
     var controls = findAgeGateControls();
     var best = pickBestAge(controls);
@@ -452,42 +688,30 @@ object PlayerChromeJs {
       notifyAgeGateVisible(false);
       ageAutoClicked = false;
       ageClickScheduled = false;
+      ageFocusDone = false;
+      lastOutlinedAge = null;
+      ageNativeTapCount = 0;
+      if (ageNativeTapTimer) {
+        try { clearInterval(ageNativeTapTimer); } catch (eC) {}
+        ageNativeTapTimer = null;
+      }
       return false;
     }
 
     lastAgeEl = best.el;
     notifyAgeGateVisible(true);
-    // While age gate is up, clear skip focus so priority stays on age CTA
     lastSkipEl = null;
     notifySkipVisible(false);
-    focusEscape(best.el);
 
-    // Auto-click with retries (3 attempts, 400ms apart) when age gate first seen
-    if (!ageAutoClicked && !ageClickScheduled && best.clearlyAge) {
-      ageClickScheduled = true;
-      var target = best.el;
-      var attempt = 0;
-      function tryAgeAutoClick() {
-        attempt++;
-        var el = target;
-        if (!isVisibleClickable(el)) {
-          var stillFind = findAgeGateControls();
-          var best2 = pickBestAge(stillFind);
-          el = best2 ? best2.el : null;
-          if (el) target = el;
-        }
-        if (el && isVisibleClickable(el)) {
-          focusEscape(el);
-          hardClick(el);
-        }
-        if (attempt >= 3) {
-          ageAutoClicked = true;
-          ageClickScheduled = false;
-          return;
-        }
-        setTimeout(tryAgeAutoClick, 400);
-      }
-      setTimeout(tryAgeAutoClick, 400);
+    // Outline / focus once only — not every 500ms poll
+    if (!ageFocusDone || lastOutlinedAge !== best.el) {
+      focusEscape(best.el, true);
+    } else {
+      markEscape(best.el);
+    }
+
+    if (!ageAutoClicked && best.clearlyAge) {
+      scheduleAgeNativeTaps(best.el);
     }
     return true;
   }
@@ -498,7 +722,6 @@ object PlayerChromeJs {
     if (!best) {
       lastSkipEl = null;
       notifySkipVisible(false);
-      // Allow another auto-click if a new skip appears later in the session
       skipAutoClicked = false;
       skipClickScheduled = false;
       return;
@@ -506,9 +729,17 @@ object PlayerChromeJs {
 
     lastSkipEl = best.el;
     notifySkipVisible(true);
-    focusEscape(best.el);
+    markEscape(best.el);
+    // Focus skip once when first seen (age gate takes priority when present)
+    if (!window.__hammyAgeGateVisible) {
+      try {
+        if (!best.el.classList.contains('hammy-focused-once')) {
+          best.el.classList.add('hammy-focused-once');
+          focusEscape(best.el, true);
+        }
+      } catch (eF) { markEscape(best.el); }
+    }
 
-    // Auto-click once after short delay if still visible
     if (!skipAutoClicked && !skipClickScheduled && best.clearlySkipAd) {
       skipClickScheduled = true;
       var target = best.el;
@@ -516,7 +747,6 @@ object PlayerChromeJs {
         skipClickScheduled = false;
         if (skipAutoClicked) return;
         if (!isVisibleClickable(target)) return;
-        // Re-check it still looks like skip
         var still = findSkipControls();
         var match = false;
         for (var j = 0; j < still.length; j++) {
@@ -524,13 +754,11 @@ object PlayerChromeJs {
         }
         if (!match) return;
         skipAutoClicked = true;
-        hardClick(target);
-        // After click, visibility may drop on next poll
+        activateCta(target, false);
       }, 400);
     }
   }
 
-  /** Priority: age gate first, else skip. */
   function pollBlockingCtas() {
     if (pollAgeGate()) return;
     pollSkip();
@@ -544,8 +772,7 @@ object PlayerChromeJs {
       el = best ? best.el : null;
     }
     if (!el) return false;
-    focusEscape(el);
-    return hardClick(el);
+    return activateCta(el, true);
   };
 
   window.__hammyClickSkip = function() {
@@ -556,11 +783,9 @@ object PlayerChromeJs {
       el = best ? best.el : null;
     }
     if (!el) return false;
-    focusEscape(el);
-    return hardClick(el);
+    return activateCta(el, true);
   };
 
-  /** Prefer age gate, then skip — used by DPAD_CENTER from Kotlin / FocusInjectJs. */
   window.__hammyClickBlockingCta = function() {
     if (window.__hammyAgeGateVisible || lastAgeEl) {
       if (window.__hammyClickAgeGate()) return true;
@@ -568,41 +793,35 @@ object PlayerChromeJs {
     if (window.__hammySkipVisible || lastSkipEl) {
       if (window.__hammyClickSkip()) return true;
     }
-    // Last-chance rescan
     if (window.__hammyClickAgeGate()) return true;
     return window.__hammyClickSkip();
   };
 
   /**
-   * DPAD_CENTER / ENTER path: hard-click age/skip or focused age-like control.
+   * DPAD_CENTER / ENTER: native tap first, then hardClick age/skip or focused CTA.
    * Returns true if a blocking CTA was attempted (Kotlin skips play-pause).
    */
   window.__hammyActivateFocusedOrBlockingCta = function() {
     try {
-      // 1) hardClick lastAgeEl / findAge
       if (lastAgeEl && isVisibleClickable(lastAgeEl)) {
-        focusEscape(lastAgeEl);
-        hardClick(lastAgeEl);
+        activateCta(lastAgeEl, true);
         return true;
       }
       var ageControls = findAgeGateControls();
       var bestAge = pickBestAge(ageControls);
       if (bestAge && bestAge.el && isVisibleClickable(bestAge.el)) {
         lastAgeEl = bestAge.el;
-        focusEscape(bestAge.el);
-        hardClick(bestAge.el);
+        activateCta(bestAge.el, true);
         return true;
       }
 
-      // 2) hardClick document.activeElement if age/skip-like
       var ae = null;
       try { ae = document.activeElement; } catch (eAe) {}
       if (ae && ae !== document.body && ae !== document.documentElement && looksLikeAgeOrSkip(ae)) {
-        hardClick(ae);
+        activateCta(ae, false);
         return true;
       }
 
-      // 3) hardClick elementFromPoint center of activeElement
       if (ae && ae.getBoundingClientRect) {
         try {
           var r = ae.getBoundingClientRect();
@@ -610,34 +829,30 @@ object PlayerChromeJs {
           var cy = Math.floor(r.top + Math.max(r.height, 1) / 2);
           var ep = document.elementFromPoint(cx, cy);
           if (ep && looksLikeAgeOrSkip(ep)) {
-            hardClick(ep);
+            activateCta(ep, false);
             return true;
           }
           if (ae.classList && ae.classList.contains('hammy-escape-btn') && isVisibleClickable(ae)) {
-            hardClick(ae);
+            activateCta(ae, false);
             return true;
           }
         } catch (ePt) {}
       }
 
-      // 4) hardClick skip
       if (lastSkipEl && isVisibleClickable(lastSkipEl)) {
-        focusEscape(lastSkipEl);
-        hardClick(lastSkipEl);
+        activateCta(lastSkipEl, true);
         return true;
       }
       var skipControls = findSkipControls();
       var bestSkip = pickBestSkip(skipControls);
       if (bestSkip && bestSkip.el && isVisibleClickable(bestSkip.el)) {
         lastSkipEl = bestSkip.el;
-        focusEscape(bestSkip.el);
-        hardClick(bestSkip.el);
+        activateCta(bestSkip.el, true);
         return true;
       }
 
-      // Focused escape btn even without label match
       if (ae && ae.classList && ae.classList.contains('hammy-escape-btn') && isVisibleClickable(ae)) {
-        hardClick(ae);
+        activateCta(ae, false);
         return true;
       }
     } catch (eAll) {}
@@ -666,7 +881,6 @@ object PlayerChromeJs {
   setTimeout(apply, 2500);
   setTimeout(apply, 5000);
 
-  // Continuous poll ~500ms so late-appearing age gate / Skip Ads is caught quickly
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = setInterval(function() {
     try { pollBlockingCtas(); } catch (eP) {}

@@ -1,12 +1,15 @@
 package com.personal.hammy
 
 import android.annotation.SuppressLint
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
@@ -31,9 +34,9 @@ import androidx.core.view.WindowInsetsControllerCompat
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
  * escape ad traps even if the page WebView is stuck.
  *
- * DPAD_CENTER always tries __hammyActivateFocusedOrBlockingCta (hard-click age/skip
- * or focused CTA) before play-pause — bridge flags are not required for the click
- * path. When ageGateVisible / skipVisible, LEFT/RIGHT do not seek.
+ * DPAD_CENTER always tries __hammyActivateFocusedOrBlockingCta (native tapAt then
+ * hard-click age/skip or focused CTA) before play-pause — bridge flags are not
+ * required for the click path. When ageGateVisible / skipVisible, LEFT/RIGHT do not seek.
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -80,6 +83,41 @@ class PlayerActivity : AppCompatActivity() {
             // Mirror only when specifics have not already reported; prefer age/skip hooks.
             if (visible && !ageGateVisible && !skipAdsVisible) {
                 skipAdsVisible = true
+            }
+        }
+
+        /**
+         * Native tap at CSS viewport coords (from getBoundingClientRect center).
+         * Converts to WebView view pixels via [WebView.getScale] and dispatches
+         * ACTION_DOWN then ACTION_UP on the UI thread — stronger than JS click
+         * for age-gate / Skip Ads CTAs that ignore synthetic events.
+         */
+        @JavascriptInterface
+        fun tapAt(x: Double, y: Double) {
+            mainHandler.post {
+                if (!::webView.isInitialized) return@post
+                try {
+                    val scale = webView.scale.toDouble().coerceAtLeast(0.01)
+                    // CSS client pixels → WebView widget coords. Scale covers zoom /
+                    // overview; getBoundingClientRect is viewport-relative (no scroll add).
+                    // Density is already baked into WebView CSS px on modern WebView;
+                    // multiply by scale only.
+                    val viewX = (x * scale).toFloat()
+                    val viewY = (y * scale).toFloat()
+                    val downTime = SystemClock.uptimeMillis()
+                    val down = MotionEvent.obtain(
+                        downTime, downTime, MotionEvent.ACTION_DOWN, viewX, viewY, 0
+                    )
+                    val upTime = downTime + 50L
+                    val up = MotionEvent.obtain(
+                        downTime, upTime, MotionEvent.ACTION_UP, viewX, viewY, 0
+                    )
+                    webView.dispatchTouchEvent(down)
+                    webView.dispatchTouchEvent(up)
+                    down.recycle()
+                    up.recycle()
+                } catch (_: Exception) {
+                }
             }
         }
     }
@@ -133,6 +171,12 @@ class PlayerActivity : AppCompatActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean = false
+
+            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                // Early age-confirm storage/cookie flags before gate scripts run
+                view?.evaluateJavascript(PlayerChromeJs.AGE_BYPASS_SCRIPT, null)
+            }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
@@ -245,6 +289,7 @@ class PlayerActivity : AppCompatActivity() {
             mainHandler.postDelayed({
                 if (gen != injectGeneration) return@postDelayed
                 if (!::webView.isInitialized) return@postDelayed
+                webView.evaluateJavascript(PlayerChromeJs.AGE_BYPASS_SCRIPT, null)
                 webView.evaluateJavascript(PlayerChromeJs.SCRIPT, null)
                 webView.evaluateJavascript(FocusInjectJs.SCRIPT, null)
             }, delay)

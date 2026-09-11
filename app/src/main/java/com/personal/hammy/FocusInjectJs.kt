@@ -272,7 +272,9 @@ object FocusInjectJs {
       if (code === 13 || code === 23 || code === 32) {
         try {
           var clicked = false;
-          if (window.__hammyClickBlockingCta) {
+          if (window.__hammyActivateFocusedOrBlockingCta) {
+            clicked = !!window.__hammyActivateFocusedOrBlockingCta();
+          } else if (window.__hammyClickBlockingCta) {
             clicked = !!window.__hammyClickBlockingCta();
           } else if (window.__hammyAgeGateVisible && window.__hammyClickAgeGate) {
             clicked = !!window.__hammyClickAgeGate();
