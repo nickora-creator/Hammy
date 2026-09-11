@@ -20,12 +20,13 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV6) {
+  if (window.__hammyChromeV7) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV6 = true;
+  window.__hammyChromeV7 = true;
   // Clear stale chrome flags so older injects cannot fight the lite assist
+  try { delete window.__hammyChromeV6; } catch(e) {}
   try { delete window.__hammyChromeV5; } catch(e) {}
   try { delete window.__hammyChromeV4; } catch(e) {}
   try { delete window.__hammyChromeV3; } catch(e) {}
@@ -315,19 +316,96 @@ object PlayerChromeJs {
     } catch (e2) {}
   }
 
-  function clickEl(el) {
+  function resolveClickTarget(el) {
+    if (!el) return null;
+    var cur = el;
+    for (var i = 0; i < 4 && cur; i++) {
+      try {
+        var tag = (cur.tagName || '').toLowerCase();
+        var role = '';
+        try { role = (cur.getAttribute && cur.getAttribute('role')) || ''; } catch (eR) {}
+        var hasOnclick = false;
+        try { hasOnclick = !!(cur.onclick || (cur.getAttribute && cur.getAttribute('onclick'))); } catch (eO) {}
+        if (tag === 'button' || tag === 'a' || tag === 'input' || role === 'button' || hasOnclick) {
+          return cur;
+        }
+      } catch (e1) {}
+      cur = cur.parentElement;
+    }
+    return el;
+  }
+
+  function firePointerMouseSequence(node, cx, cy) {
+    if (!node) return false;
+    var downOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+    var upOpts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 0 };
+    try {
+      if (typeof PointerEvent === 'function') {
+        node.dispatchEvent(new PointerEvent('pointerdown', downOpts));
+      }
+    } catch (e1) {}
+    try { node.dispatchEvent(new MouseEvent('mousedown', downOpts)); } catch (e2) {}
+    try {
+      if (typeof PointerEvent === 'function') {
+        node.dispatchEvent(new PointerEvent('pointerup', upOpts));
+      }
+    } catch (e3) {}
+    try { node.dispatchEvent(new MouseEvent('mouseup', upOpts)); } catch (e4) {}
+    try { node.dispatchEvent(new MouseEvent('click', upOpts)); } catch (e5) {}
+    try {
+      node.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+      node.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }));
+    } catch (e6) {}
+    try { node.click(); } catch (e7) {}
+    return true;
+  }
+
+  /** Full pointer/mouse/keyboard sequence — many age-gate CTAs ignore bare el.click(). */
+  function hardClick(el) {
     if (!el) return false;
     try {
-      el.click();
-      return true;
-    } catch (e2) {
+      var target = resolveClickTarget(el);
+      var cx = 0, cy = 0;
       try {
-        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        return true;
-      } catch (e3) {
-        return false;
+        var r = target.getBoundingClientRect();
+        cx = Math.floor(r.left + Math.max(r.width, 1) / 2);
+        cy = Math.floor(r.top + Math.max(r.height, 1) / 2);
+      } catch (eR) {}
+      var fromPoint = null;
+      try { fromPoint = document.elementFromPoint(cx, cy); } catch (eP) {}
+      var ok = firePointerMouseSequence(target, cx, cy);
+      if (fromPoint && fromPoint !== target) {
+        try { firePointerMouseSequence(resolveClickTarget(fromPoint), cx, cy); } catch (eF) {}
       }
+      try {
+        var parentBtn = target.closest && target.closest('button, a, [role="button"]');
+        if (parentBtn && parentBtn !== target) firePointerMouseSequence(parentBtn, cx, cy);
+      } catch (eB) {}
+      return !!ok;
+    } catch (e) {
+      try { el.click(); return true; } catch (e2) { return false; }
     }
+  }
+
+  function looksLikeAgeOrSkip(el) {
+    if (!el) return false;
+    try {
+      if (el.classList && el.classList.contains('hammy-escape-btn')) return true;
+    } catch (e0) {}
+    var label = normalizeLabel(el);
+    if (!label) {
+      try { label = normalizeLabel(el.parentElement); } catch (e1) {}
+    }
+    if (!label) return false;
+    if (/\bskip(\s+ads?)?\b/i.test(label)) return true;
+    if (/\b(i['’]?m\s+18(\s+or\s+older)?|i\s+am\s+18(\s+or\s+older)?|18\s+or\s+older|over\s+18|18\s*\+)\b/i.test(label)) return true;
+    if (/\b(enter|i\s+agree|accept|continue|confirm)\b/i.test(label) &&
+        (/\b(age|gate|18|adult|nsfw|mature|disclaimer)\b/i.test(label) ||
+         /\b(age|gate|18|adult|nsfw|mature|disclaimer)\b/i.test(ancestorContext(el, 5)))) {
+      return true;
+    }
+    if (/\b(age|gate|18\+|over.?18|confirm.?age|age.?verif)\b/i.test(label)) return true;
+    return false;
   }
 
   function focusEscape(el) {
@@ -384,23 +462,32 @@ object PlayerChromeJs {
     notifySkipVisible(false);
     focusEscape(best.el);
 
-    // Auto-click once after ~300ms if still visible
+    // Auto-click with retries (3 attempts, 400ms apart) when age gate first seen
     if (!ageAutoClicked && !ageClickScheduled && best.clearlyAge) {
       ageClickScheduled = true;
       var target = best.el;
-      setTimeout(function() {
-        ageClickScheduled = false;
-        if (ageAutoClicked) return;
-        if (!isVisibleClickable(target)) return;
-        var still = findAgeGateControls();
-        var match = false;
-        for (var j = 0; j < still.length; j++) {
-          if (still[j].el === target) { match = true; break; }
+      var attempt = 0;
+      function tryAgeAutoClick() {
+        attempt++;
+        var el = target;
+        if (!isVisibleClickable(el)) {
+          var stillFind = findAgeGateControls();
+          var best2 = pickBestAge(stillFind);
+          el = best2 ? best2.el : null;
+          if (el) target = el;
         }
-        if (!match) return;
-        ageAutoClicked = true;
-        clickEl(target);
-      }, 300);
+        if (el && isVisibleClickable(el)) {
+          focusEscape(el);
+          hardClick(el);
+        }
+        if (attempt >= 3) {
+          ageAutoClicked = true;
+          ageClickScheduled = false;
+          return;
+        }
+        setTimeout(tryAgeAutoClick, 400);
+      }
+      setTimeout(tryAgeAutoClick, 400);
     }
     return true;
   }
@@ -437,7 +524,7 @@ object PlayerChromeJs {
         }
         if (!match) return;
         skipAutoClicked = true;
-        clickEl(target);
+        hardClick(target);
         // After click, visibility may drop on next poll
       }, 400);
     }
@@ -458,7 +545,7 @@ object PlayerChromeJs {
     }
     if (!el) return false;
     focusEscape(el);
-    return clickEl(el);
+    return hardClick(el);
   };
 
   window.__hammyClickSkip = function() {
@@ -470,7 +557,7 @@ object PlayerChromeJs {
     }
     if (!el) return false;
     focusEscape(el);
-    return clickEl(el);
+    return hardClick(el);
   };
 
   /** Prefer age gate, then skip — used by DPAD_CENTER from Kotlin / FocusInjectJs. */
@@ -484,6 +571,77 @@ object PlayerChromeJs {
     // Last-chance rescan
     if (window.__hammyClickAgeGate()) return true;
     return window.__hammyClickSkip();
+  };
+
+  /**
+   * DPAD_CENTER / ENTER path: hard-click age/skip or focused age-like control.
+   * Returns true if a blocking CTA was attempted (Kotlin skips play-pause).
+   */
+  window.__hammyActivateFocusedOrBlockingCta = function() {
+    try {
+      // 1) hardClick lastAgeEl / findAge
+      if (lastAgeEl && isVisibleClickable(lastAgeEl)) {
+        focusEscape(lastAgeEl);
+        hardClick(lastAgeEl);
+        return true;
+      }
+      var ageControls = findAgeGateControls();
+      var bestAge = pickBestAge(ageControls);
+      if (bestAge && bestAge.el && isVisibleClickable(bestAge.el)) {
+        lastAgeEl = bestAge.el;
+        focusEscape(bestAge.el);
+        hardClick(bestAge.el);
+        return true;
+      }
+
+      // 2) hardClick document.activeElement if age/skip-like
+      var ae = null;
+      try { ae = document.activeElement; } catch (eAe) {}
+      if (ae && ae !== document.body && ae !== document.documentElement && looksLikeAgeOrSkip(ae)) {
+        hardClick(ae);
+        return true;
+      }
+
+      // 3) hardClick elementFromPoint center of activeElement
+      if (ae && ae.getBoundingClientRect) {
+        try {
+          var r = ae.getBoundingClientRect();
+          var cx = Math.floor(r.left + Math.max(r.width, 1) / 2);
+          var cy = Math.floor(r.top + Math.max(r.height, 1) / 2);
+          var ep = document.elementFromPoint(cx, cy);
+          if (ep && looksLikeAgeOrSkip(ep)) {
+            hardClick(ep);
+            return true;
+          }
+          if (ae.classList && ae.classList.contains('hammy-escape-btn') && isVisibleClickable(ae)) {
+            hardClick(ae);
+            return true;
+          }
+        } catch (ePt) {}
+      }
+
+      // 4) hardClick skip
+      if (lastSkipEl && isVisibleClickable(lastSkipEl)) {
+        focusEscape(lastSkipEl);
+        hardClick(lastSkipEl);
+        return true;
+      }
+      var skipControls = findSkipControls();
+      var bestSkip = pickBestSkip(skipControls);
+      if (bestSkip && bestSkip.el && isVisibleClickable(bestSkip.el)) {
+        lastSkipEl = bestSkip.el;
+        focusEscape(bestSkip.el);
+        hardClick(bestSkip.el);
+        return true;
+      }
+
+      // Focused escape btn even without label match
+      if (ae && ae.classList && ae.classList.contains('hammy-escape-btn') && isVisibleClickable(ae)) {
+        hardClick(ae);
+        return true;
+      }
+    } catch (eAll) {}
+    return false;
   };
 
   window.__hammyHelpEscapeAd = pollBlockingCtas;

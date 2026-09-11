@@ -31,9 +31,9 @@ import androidx.core.view.WindowInsetsControllerCompat
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
  * escape ad traps even if the page WebView is stuck.
  *
- * When an age-gate / 18+ confirm or Skip Ads control is visible
- * (HammyBridge.ageGateVisible / skipVisible), DPAD_CENTER activates that CTA
- * (age gate first) and LEFT/RIGHT do not seek.
+ * DPAD_CENTER always tries __hammyActivateFocusedOrBlockingCta (hard-click age/skip
+ * or focused CTA) before play-pause — bridge flags are not required for the click
+ * path. When ageGateVisible / skipVisible, LEFT/RIGHT do not seek.
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -272,15 +272,9 @@ class PlayerActivity : AppCompatActivity() {
                     exitPlayer()
                     return true
                 }
-                // Priority: age gate first, then Skip Ads, else play-pause
-                if (ageGateVisible || skipAdsVisible) {
-                    clickBlockingCta()
-                    return true
-                }
-                webView.evaluateJavascript(
-                    "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
-                    null
-                )
+                // Always try hard-click age/skip/focused CTA first (ignore stale bridge flags).
+                // Flags still gate seek below. Toggle only if activate returns false.
+                activateFocusedOrBlockingCtaThenMaybeToggle()
                 return true
             }
             // Close focused: let Left/Right/Up/Down move focus normally (no seek)
@@ -323,11 +317,39 @@ class PlayerActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    /**
+     * Always run activate CTA JS on OK. Nested callback toggles play/pause only when
+     * activate returns false (no age/skip/focused blocking control found).
+     */
+    private fun activateFocusedOrBlockingCtaThenMaybeToggle() {
+        if (!::webView.isInitialized) return
+        webView.evaluateJavascript(
+            "(function(){try{" +
+                "if(window.__hammyActivateFocusedOrBlockingCta){" +
+                "return window.__hammyActivateFocusedOrBlockingCta();}" +
+                "if(window.__hammyClickBlockingCta){return window.__hammyClickBlockingCta();}" +
+                "if(window.__hammyClickAgeGate){return window.__hammyClickAgeGate();}" +
+                "if(window.__hammyClickSkip){return window.__hammyClickSkip();}" +
+                "}catch(e){}return false;})();"
+        ) { result ->
+            val activated = result == "true"
+            if (!activated && ::webView.isInitialized) {
+                webView.evaluateJavascript(
+                    "(function(){try{if(window.__hammyToggleVideo){" +
+                        "return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
+                    null
+                )
+            }
+        }
+    }
+
     /** Prefer age-gate CTA, then Skip Ads (matches JS __hammyClickBlockingCta). */
     private fun clickBlockingCta() {
         if (!::webView.isInitialized) return
         webView.evaluateJavascript(
             "(function(){try{" +
+                "if(window.__hammyActivateFocusedOrBlockingCta){" +
+                "return window.__hammyActivateFocusedOrBlockingCta();}" +
                 "if(window.__hammyClickBlockingCta){return window.__hammyClickBlockingCta();}" +
                 "if(window.__hammyAgeGateVisible&&window.__hammyClickAgeGate){return window.__hammyClickAgeGate();}" +
                 "if(window.__hammyClickSkip){return window.__hammyClickSkip();}" +
