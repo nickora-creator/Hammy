@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets
 import java.util.regex.Pattern
 
 /**
- * Loads an official listing/category page over HTTPS and extracts publicly embedded
+ * Loads an official listing/category/search page over HTTPS and extracts publicly embedded
  * card metadata (title, thumbnail, video page URL) from window.initials.
  * No CDN scrape, no unofficial API — same HTML a desktop browser would receive.
  */
@@ -29,12 +29,22 @@ object ListingFetcher {
         "videoDuration", "length", "time", "durationSec", "durationSeconds"
     )
 
-    fun fetch(listingUrl: String): Result<List<VideoItem>> = runCatching {
+    /**
+     * @param requireAllSlugs when non-empty, prefer the server search URL results, then
+     *   post-filter client-side to videos whose tags/categories include every slug
+     *   (when tag metadata is present on the thumbs).
+     */
+    fun fetch(
+        listingUrl: String,
+        requireAllSlugs: Collection<String> = emptyList()
+    ): Result<List<VideoItem>> = runCatching {
         val html = download(listingUrl)
         val json = extractInitialsJson(html)
             ?: error("Could not find listing data on page")
-        val items = collectVideoThumbs(JSONObject(json))
-        if (items.isEmpty()) error("No videos found on this page")
+        var items = collectVideoThumbs(JSONObject(json))
+        if (requireAllSlugs.isNotEmpty()) {
+            items = maybePostFilterAll(items, requireAllSlugs)
+        }
         items
     }
 
@@ -103,18 +113,81 @@ object ListingFetcher {
                     .firstOrNull { it.isNotBlank() }
                     ?: ""
                 val durationLabel = extractDurationLabel(item)
+                val tags = extractTags(item)
                 out.putIfAbsent(
                     pageUrl,
                     VideoItem(
                         title = title,
                         thumbUrl = thumb,
                         pageUrl = pageUrl,
-                        durationLabel = durationLabel
+                        durationLabel = durationLabel,
+                        tags = tags
                     )
                 )
             }
         }
         return out.values.toList()
+    }
+
+    private fun extractTags(item: JSONObject): Set<String> {
+        val out = linkedSetOf<String>()
+        for (key in listOf("categories", "tags", "categoryList", "tagList", "cats")) {
+            val arr = item.optJSONArray(key) ?: continue
+            for (i in 0 until arr.length()) {
+                when (val el = arr.opt(i)) {
+                    is String -> if (el.isNotBlank()) out.add(el.trim())
+                    is JSONObject -> {
+                        sequenceOf("slug", "name", "title", "text", "label")
+                            .map { el.optString(it) }
+                            .firstOrNull { it.isNotBlank() }
+                            ?.let { out.add(it.trim()) }
+                    }
+                }
+            }
+        }
+        item.optString("category").takeIf { it.isNotBlank() }?.let { out.add(it.trim()) }
+        item.optJSONObject("category")?.let { cat ->
+            sequenceOf("slug", "name", "title")
+                .map { cat.optString(it) }
+                .firstOrNull { it.isNotBlank() }
+                ?.let { out.add(it.trim()) }
+        }
+        return out
+    }
+
+    /**
+     * When thumbs include categories/tags, keep only those that match every required slug.
+     * If no tag metadata is present, keep server results as-is (search URL is the primary filter).
+     */
+    private fun maybePostFilterAll(
+        items: List<VideoItem>,
+        requireAllSlugs: Collection<String>
+    ): List<VideoItem> {
+        val required = requireAllSlugs.map { normalizeTag(it) }.filter { it.isNotEmpty() }
+        if (required.isEmpty()) return items
+        val taggedCount = items.count { it.tags.isNotEmpty() }
+        if (taggedCount == 0) return items
+
+        return items.filter { item ->
+            if (item.tags.isEmpty()) return@filter false
+            val normalized = item.tags.map { normalizeTag(it) }.toSet()
+            required.all { req ->
+                normalized.any { tag -> tagsMatch(tag, req) }
+            }
+        }
+    }
+
+    private fun normalizeTag(raw: String): String =
+        raw.trim().lowercase().replace('_', '-')
+
+    private fun tagsMatch(tag: String, required: String): Boolean {
+        if (tag == required) return true
+        val tagDashed = tag.replace(' ', '-')
+        val reqDashed = required.replace(' ', '-')
+        if (tagDashed == reqDashed) return true
+        val tagSpaced = tag.replace('-', ' ')
+        val reqSpaced = required.replace('-', ' ')
+        return tagSpaced == reqSpaced
     }
 
     private fun extractDurationLabel(item: JSONObject): String {

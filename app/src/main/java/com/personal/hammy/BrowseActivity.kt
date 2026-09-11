@@ -20,7 +20,7 @@ import java.util.concurrent.Executors
 
 /**
  * Native Fire TV / Leanback-style browse: focusable poster cards in a grid.
- * Listing metadata comes from official category/home HTML (window.initials).
+ * Listing metadata comes from official category/home/search HTML (window.initials).
  * Playback opens [PlayerActivity] with only that video's official page URL.
  */
 class BrowseActivity : AppCompatActivity() {
@@ -38,8 +38,11 @@ class BrowseActivity : AppCompatActivity() {
 
     private var currentUrl: String = ""
     private var currentLabel: String = "Home"
+    private var currentRequireAll: List<String> = emptyList()
     private var loadGeneration = 0
     private var activeShortcut: Button? = null
+    private var mixUrl: String? = null
+    private var orderedSlugs: List<String> = emptyList()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,26 +57,61 @@ class BrowseActivity : AppCompatActivity() {
         btnRetry = findViewById(R.id.btnRetry)
 
         TvFocus.attach(btnRetry, scale = 1.1f)
-        btnRetry.setOnClickListener { loadListing(currentUrl, currentLabel, activeShortcut) }
+        btnRetry.setOnClickListener {
+            loadListing(currentUrl, currentLabel, activeShortcut, currentRequireAll)
+        }
 
         videoGrid.layoutManager = GridLayoutManager(this, 5)
         videoGrid.adapter = adapter
         videoGrid.itemAnimator = null
 
+        val orientation = Prefs.getOrientation(this)
+        orderedSlugs = Prefs.getOrderedSelectedSlugs(this)
+        mixUrl = orientation.combinedSearchUrl(orderedSlugs)
+
         buildShortcuts()
 
-        val orientation = Prefs.getOrientation(this)
-        val startUrl = intent.getStringExtra(EXTRA_URL) ?: orientation.homeUrl
-        val startLabel = intent.getStringExtra(EXTRA_LABEL) ?: getString(R.string.home)
-        // Prefer Home shortcut if present
-        val homeBtn = shortcutContainer.findViewWithTag<Button>("shortcut:home")
-        loadListing(startUrl, startLabel, homeBtn)
+        val intentUrl = intent.getStringExtra(EXTRA_URL)
+        val intentLabel = intent.getStringExtra(EXTRA_LABEL)
+        val startUrl: String
+        val startLabel: String
+        val startRequireAll: List<String>
+        val startBtn: Button?
+
+        when {
+            intentUrl != null -> {
+                startUrl = intentUrl
+                startLabel = intentLabel ?: getString(R.string.home)
+                startRequireAll = if (mixUrl != null && intentUrl == mixUrl) orderedSlugs else emptyList()
+                startBtn = when {
+                    mixUrl != null && intentUrl == mixUrl ->
+                        shortcutContainer.findViewWithTag("shortcut:all")
+                    intentUrl == orientation.homeUrl ->
+                        shortcutContainer.findViewWithTag("shortcut:home")
+                    else -> null
+                }
+            }
+            mixUrl != null -> {
+                // Default: combined AND listing for selected categories
+                startUrl = mixUrl!!
+                startLabel = intentLabel ?: getString(R.string.all_selected)
+                startRequireAll = orderedSlugs
+                startBtn = shortcutContainer.findViewWithTag("shortcut:all")
+            }
+            else -> {
+                startUrl = orientation.homeUrl
+                startLabel = intentLabel ?: getString(R.string.home)
+                startRequireAll = emptyList()
+                startBtn = shortcutContainer.findViewWithTag("shortcut:home")
+            }
+        }
+
+        loadListing(startUrl, startLabel, startBtn, startRequireAll)
     }
 
     private fun buildShortcuts() {
         shortcutContainer.removeAllViews()
         val orientation = Prefs.getOrientation(this)
-        val slugs = Prefs.getSelectedSlugs(this)
         val catalog = Categories.forOrientation(orientation).associateBy { it.slug }
 
         addShortcut(getString(R.string.home), orientation.homeUrl, tag = "shortcut:home")
@@ -83,16 +121,31 @@ class BrowseActivity : AppCompatActivity() {
             finish()
         }, tag = "shortcut:prefs")
 
-        for (slug in slugs) {
+        val mix = mixUrl
+        if (mix != null && orderedSlugs.isNotEmpty()) {
+            addShortcut(
+                getString(R.string.all_selected),
+                mix,
+                tag = "shortcut:all",
+                requireAll = orderedSlugs
+            )
+        }
+
+        for (slug in orderedSlugs) {
             val name = catalog[slug]?.name ?: slug
             val url = orientation.categoryPrefix + slug
             addShortcut(name, url, tag = "shortcut:cat:$slug")
         }
     }
 
-    private fun addShortcut(label: String, url: String, tag: String) {
+    private fun addShortcut(
+        label: String,
+        url: String,
+        tag: String,
+        requireAll: List<String> = emptyList()
+    ) {
         addShortcut(label, tag = tag) { btn ->
-            loadListing(url, label, btn)
+            loadListing(url, label, btn, requireAll)
         }
     }
 
@@ -131,26 +184,42 @@ class BrowseActivity : AppCompatActivity() {
         shortcutContainer.addView(btn)
     }
 
-    private fun loadListing(url: String, label: String, selectedBtn: Button?) {
+    private fun loadListing(
+        url: String,
+        label: String,
+        selectedBtn: Button?,
+        requireAll: List<String> = emptyList()
+    ) {
         currentUrl = url
         currentLabel = label
+        currentRequireAll = requireAll
         sectionTitle.text = label
         markActiveShortcut(selectedBtn)
 
         val gen = ++loadGeneration
         showLoading()
         io.execute {
-            val result = ListingFetcher.fetch(url)
+            val result = ListingFetcher.fetch(url, requireAllSlugs = requireAll)
             main.post {
                 if (gen != loadGeneration) return@post
                 result.fold(
                     onSuccess = { items ->
-                        adapter.submit(items)
-                        showGrid()
-                        videoGrid.post {
-                            if (adapter.itemCount > 0) {
-                                videoGrid.findViewHolderForAdapterPosition(0)
-                                    ?.itemView?.requestFocus()
+                        if (items.isEmpty()) {
+                            adapter.submit(emptyList())
+                            val emptyMsg = if (requireAll.isNotEmpty()) {
+                                getString(R.string.empty_intersection)
+                            } else {
+                                getString(R.string.empty_listing)
+                            }
+                            showError(emptyMsg)
+                        } else {
+                            adapter.submit(items)
+                            showGrid()
+                            videoGrid.post {
+                                if (adapter.itemCount > 0) {
+                                    videoGrid.findViewHolderForAdapterPosition(0)
+                                        ?.itemView?.requestFocus()
+                                }
                             }
                         }
                     },

@@ -68,9 +68,19 @@ class CategoryActivity : AppCompatActivity() {
     private fun finishSetup(slugs: Set<String>) {
         Prefs.setSelectedSlugs(this, slugs)
         Prefs.setSetupDone(this, true)
-        startActivity(Intent(this, BrowseActivity::class.java).apply {
+
+        val orientation = Prefs.getOrientation(this)
+        val ordered = Prefs.getOrderedSelectedSlugs(this)
+        val mixUrl = orientation.combinedSearchUrl(ordered)
+
+        val intent = Intent(this, BrowseActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_NEW_TASK
-        })
+            if (mixUrl != null) {
+                putExtra(BrowseActivity.EXTRA_URL, mixUrl)
+                putExtra(BrowseActivity.EXTRA_LABEL, getString(R.string.all_selected))
+            }
+        }
+        startActivity(intent)
         finish()
     }
 

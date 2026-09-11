@@ -10,7 +10,7 @@ Personal-use Fire TV / Android TV sideload app. Native Leanback-style browse gri
 1. **18+ confirm** — Continue / Exit  
 2. **Orientation** — Straight / Gay / Trans (large DPAD cards)  
 3. **Categories** — ~25–40 popular categories shuffled each open; select up to 10; Continue or Skip  
-4. **Browse (native)** — focusable poster/thumbnail cards in a TV grid + shortcut bar (Home, Change prefs, selected categories)  
+4. **Browse (native)** — focusable poster/thumbnail cards in a TV grid + shortcut bar (Home, Change prefs, **All selected** AND-mix, individual categories). After category setup, opens the combined search (intersection) immediately — not Home.  
 5. **Player** — fullscreen WebView for that video’s official page URL only; JS/CSS strips site chrome so the main content `<video>` / player fills the screen (TV-style). Ignores preroll/IMA/VAST ad videos, keeps Skip/Close visible, and offers a native leanback **Close** (Back/Menu also `finish()` to the grid). Focus-ring + Center play-pause; consent/age dialogs stay usable until dismissed.
 
 Preferences (orientation + categories) are stored in `SharedPreferences`.
@@ -19,12 +19,11 @@ Preferences (orientation + categories) are stored in `SharedPreferences`.
 
 Browse loads official URLs such as:
 
-- `https://xhamster.com/categories/<slug>`
-- `https://xhamster.com/gay/categories/<slug>`
-- `https://xhamster.com/shemale/categories/<slug>`
-- orientation home pages
+- Combined AND search: `https://xhamster.com/search/<slug1>+<slug2>+…` (gay: `/gay/search/…`, trans: `/shemale/search/…`)
+- Single category: `https://xhamster.com/categories/<slug>` (and gay/shemale prefixes)
+- orientation home pages (when categories were skipped)
 
-and extracts publicly present `{title, thumb, url}` card fields. Empty/error states show a native message with **Retry**.
+and extracts publicly present `{title, thumb, url}` card fields. When tag metadata is present, the mix view can post-filter client-side so every selected slug matches. Empty/error states show a native message with **Retry**.
 
 ## Player WebView user agent
 

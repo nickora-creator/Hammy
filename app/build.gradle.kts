@@ -11,8 +11,8 @@ android {
         applicationId = "com.personal.hammy"
         minSdk = 28
         targetSdk = 34
-        versionCode = 11
-        versionName = "0.2.8"
+        versionCode = 12
+        versionName = "0.2.9"
     }
 
     buildTypes {

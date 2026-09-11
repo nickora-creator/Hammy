@@ -14,6 +14,24 @@ object Prefs {
         GAY("gay", "https://xhamster.com/gay", "https://xhamster.com/gay/categories/"),
         TRANS("trans", "https://xhamster.com/shemale", "https://xhamster.com/shemale/categories/");
 
+        /**
+         * Combined AND search URL for selected category slugs.
+         * Straight: /search/slug1+slug2
+         * Gay: /gay/search/...
+         * Trans: /shemale/search/...
+         */
+        fun combinedSearchUrl(slugs: Collection<String>): String? {
+            if (slugs.isEmpty()) return null
+            val path = slugs.joinToString("+") { slug ->
+                slug.trim().replace(" ", "%20")
+            }
+            return when (this) {
+                STRAIGHT -> "https://xhamster.com/search/$path"
+                GAY -> "https://xhamster.com/gay/search/$path"
+                TRANS -> "https://xhamster.com/shemale/search/$path"
+            }
+        }
+
         companion object {
             fun fromKey(key: String?): Orientation =
                 entries.firstOrNull { it.key == key } ?: STRAIGHT
@@ -49,5 +67,13 @@ object Prefs {
 
     fun setSelectedSlugs(ctx: Context, slugs: Set<String>) {
         prefs(ctx).edit().putStringSet(KEY_CATEGORIES, slugs).apply()
+    }
+
+    /** Selected slugs in catalog order (stable for search URLs). */
+    fun getOrderedSelectedSlugs(ctx: Context): List<String> {
+        val selected = getSelectedSlugs(ctx)
+        if (selected.isEmpty()) return emptyList()
+        val catalog = Categories.forOrientation(getOrientation(ctx))
+        return catalog.map { it.slug }.filter { it in selected }
     }
 }

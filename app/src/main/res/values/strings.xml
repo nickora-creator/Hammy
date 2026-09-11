@@ -14,7 +14,10 @@
     <string name="skip">Skip</string>
     <string name="change_prefs">Change prefs</string>
     <string name="home">Home</string>
+    <string name="all_selected">All selected</string>
     <string name="retry">Retry</string>
     <string name="load_failed">Could not load previews. Check your connection and try again.</string>
+    <string name="empty_listing">No videos found on this page.</string>
+    <string name="empty_intersection">No videos match all selected categories. Try fewer categories or pick different ones.</string>
     <string name="video_thumb">Video thumbnail</string>
 </resources>
