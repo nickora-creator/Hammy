@@ -218,6 +218,7 @@ class BrowseActivity : AppCompatActivity() {
         class VH(view: View) : RecyclerView.ViewHolder(view) {
             val root: View = view.findViewById(R.id.videoCardRoot)
             val thumb: ImageView = view.findViewById(R.id.thumb)
+            val duration: TextView = view.findViewById(R.id.duration)
             val title: TextView = view.findViewById(R.id.title)
         }
 
@@ -232,6 +233,13 @@ class BrowseActivity : AppCompatActivity() {
             val item = items[position]
             holder.title.text = item.title
             ThumbLoader.load(holder.thumb, item.thumbUrl)
+            if (item.durationLabel.isNotBlank()) {
+                holder.duration.text = item.durationLabel
+                holder.duration.visibility = View.VISIBLE
+            } else {
+                holder.duration.text = ""
+                holder.duration.visibility = View.GONE
+            }
             holder.root.setOnClickListener { onClick(item) }
         }
 

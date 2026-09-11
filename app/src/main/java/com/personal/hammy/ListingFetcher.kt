@@ -24,6 +24,11 @@ object ListingFetcher {
         Pattern.CASE_INSENSITIVE
     )
 
+    private val durationKeyHints = listOf(
+        "duration", "durationMS", "durationMs", "duration_ms",
+        "videoDuration", "length", "time", "durationSec", "durationSeconds"
+    )
+
     fun fetch(listingUrl: String): Result<List<VideoItem>> = runCatching {
         val html = download(listingUrl)
         val json = extractInitialsJson(html)
@@ -97,13 +102,92 @@ object ListingFetcher {
                     .map { item.optString(it) }
                     .firstOrNull { it.isNotBlank() }
                     ?: ""
+                val durationLabel = extractDurationLabel(item)
                 out.putIfAbsent(
                     pageUrl,
-                    VideoItem(title = title, thumbUrl = thumb, pageUrl = pageUrl)
+                    VideoItem(
+                        title = title,
+                        thumbUrl = thumb,
+                        pageUrl = pageUrl,
+                        durationLabel = durationLabel
+                    )
                 )
             }
         }
         return out.values.toList()
+    }
+
+    private fun extractDurationLabel(item: JSONObject): String {
+        // Prefer already-formatted strings like "12:34" or "1:05:02"
+        for (key in durationKeyHints) {
+            if (!item.has(key)) continue
+            val raw = item.opt(key) ?: continue
+            when (raw) {
+                is String -> {
+                    val s = raw.trim()
+                    if (s.isEmpty() || s == "null") continue
+                    if (s.contains(':')) return s
+                    parseNumericDuration(s, key)?.let { return it }
+                }
+                is Number -> {
+                    formatSeconds(normalizeToSeconds(raw.toDouble(), key))?.let { return it }
+                }
+            }
+        }
+        // Nested objects / alternate structures
+        for (key in listOf("duration", "video", "meta", "info")) {
+            val nested = item.optJSONObject(key) ?: continue
+            extractDurationLabel(nested).takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        // Scan any remaining keys that look like duration
+        val keys = item.keys()
+        while (keys.hasNext()) {
+            val key = keys.next()
+            if (!key.contains("duration", ignoreCase = true) &&
+                !key.equals("length", ignoreCase = true)
+            ) continue
+            if (key in durationKeyHints) continue
+            val raw = item.opt(key) ?: continue
+            when (raw) {
+                is String -> {
+                    val s = raw.trim()
+                    if (s.contains(':')) return s
+                    parseNumericDuration(s, key)?.let { return it }
+                }
+                is Number -> {
+                    formatSeconds(normalizeToSeconds(raw.toDouble(), key))?.let { return it }
+                }
+            }
+        }
+        return ""
+    }
+
+    private fun parseNumericDuration(raw: String, key: String): String? {
+        val n = raw.toDoubleOrNull() ?: return null
+        return formatSeconds(normalizeToSeconds(n, key))
+    }
+
+    private fun normalizeToSeconds(value: Double, key: String): Double {
+        val k = key.lowercase()
+        return when {
+            k.contains("ms") -> value / 1000.0
+            // Large values without unit hint are almost always milliseconds
+            value >= 10_000 -> value / 1000.0
+            else -> value
+        }
+    }
+
+    private fun formatSeconds(totalSeconds: Double): String? {
+        if (totalSeconds.isNaN() || totalSeconds <= 0) return null
+        val secs = totalSeconds.toLong()
+        val h = secs / 3600
+        val m = (secs % 3600) / 60
+        val s = secs % 60
+        return if (h > 0) {
+            "%d:%02d:%02d".format(h, m, s)
+        } else {
+            "%d:%02d".format(m, s)
+        }
     }
 
     private fun walk(node: Any?, onObject: (JSONObject) -> Unit) {

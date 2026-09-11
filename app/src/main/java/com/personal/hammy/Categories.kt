@@ -4,9 +4,11 @@ data class Category(val name: String, val slug: String)
 
 object Categories {
     private val lingerie = Category("Lingerie", "lingerie")
+    private val fullMovies = Category("Full Movies", "full-movie")
 
     val straight = listOf(
         lingerie,
+        fullMovies,
         Category("Amateur", "amateur"),
         Category("Anal", "anal"),
         Category("Asian", "asian"),
@@ -48,6 +50,8 @@ object Categories {
     )
 
     val gay = listOf(
+        lingerie,
+        fullMovies,
         Category("Amateur", "amateur"),
         Category("Anal", "anal"),
         Category("Asian", "asian"),
@@ -87,6 +91,7 @@ object Categories {
 
     val trans = listOf(
         lingerie,
+        fullMovies,
         Category("Amateur", "amateur"),
         Category("Anal", "anal"),
         Category("Asian", "asian"),
@@ -132,16 +137,14 @@ object Categories {
     }
 
     /**
-     * Shuffle categories for the picker, but always keep Lingerie pinned at index 0
-     * when it is present for that orientation (straight / trans). Gay has no Lingerie.
+     * Shuffle categories for the picker, but always keep Lingerie then Full Movies
+     * pinned at the start for all three orientations (straight / gay / trans).
      */
     fun shuffled(orientation: Prefs.Orientation): List<Category> {
         val all = forOrientation(orientation)
-        val pin = all.firstOrNull { it.slug == lingerie.slug }
-        return if (pin != null) {
-            listOf(pin) + all.filter { it.slug != lingerie.slug }.shuffled()
-        } else {
-            all.shuffled()
-        }
+        val pinSlugs = listOf(lingerie.slug, fullMovies.slug)
+        val pinned = pinSlugs.mapNotNull { slug -> all.firstOrNull { it.slug == slug } }
+        val rest = all.filter { it.slug !in pinSlugs }.shuffled()
+        return pinned + rest
     }
 }
