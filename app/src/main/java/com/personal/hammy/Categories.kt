@@ -3,7 +3,10 @@ package com.personal.hammy
 data class Category(val name: String, val slug: String)
 
 object Categories {
+    private val lingerie = Category("Lingerie", "lingerie")
+
     val straight = listOf(
+        lingerie,
         Category("Amateur", "amateur"),
         Category("Anal", "anal"),
         Category("Asian", "asian"),
@@ -83,6 +86,7 @@ object Categories {
     )
 
     val trans = listOf(
+        lingerie,
         Category("Amateur", "amateur"),
         Category("Anal", "anal"),
         Category("Asian", "asian"),
@@ -127,6 +131,17 @@ object Categories {
         Prefs.Orientation.TRANS -> trans
     }
 
-    fun shuffled(orientation: Prefs.Orientation): List<Category> =
-        forOrientation(orientation).shuffled()
+    /**
+     * Shuffle categories for the picker, but always keep Lingerie pinned at index 0
+     * when it is present for that orientation (straight / trans). Gay has no Lingerie.
+     */
+    fun shuffled(orientation: Prefs.Orientation): List<Category> {
+        val all = forOrientation(orientation)
+        val pin = all.firstOrNull { it.slug == lingerie.slug }
+        return if (pin != null) {
+            listOf(pin) + all.filter { it.slug != lingerie.slug }.shuffled()
+        } else {
+            all.shuffled()
+        }
+    }
 }

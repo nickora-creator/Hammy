@@ -4,6 +4,9 @@ package com.personal.hammy
  * Injected into the official video page WebView: hide site chrome, scale the main
  * player/video to fill the viewport, attempt autoplay + fullscreen. Idempotent with
  * retries (same pattern as [FocusInjectJs]). Does not scrape CDNs or change media URLs.
+ *
+ * Chrome-hide only runs after a real video is present, and the player root is
+ * reparented onto document.body so sibling-hide CSS cannot blank the screen.
  */
 object PlayerChromeJs {
     val SCRIPT: String = buildScript()
@@ -11,23 +14,28 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV1) {
+  if (window.__hammyChromeV2) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV1 = true;
+  window.__hammyChromeV2 = true;
 
   var STYLE_ID = 'hammy-chrome-css';
   var lastFsAt = 0;
   var unmuted = false;
   var playAttempts = 0;
+  var moTimer = null;
+  var reparented = false;
 
   function isConsentVisible() {
+    // Softened: only cookie/consent/gdpr/age-gate style nodes, never bare .modal/.overlay
     var sels = [
-      '[id*="cookie" i]', '[class*="cookie" i]', '[id*="consent" i]', '[class*="consent" i]',
-      '[id*="gdpr" i]', '[class*="gdpr" i]', '[class*="age-gate" i]', '[class*="agegate" i]',
-      '[class*="AgeGate" i]', '[id*="age-verification" i]', '[class*="terms" i]',
-      '[role="dialog"]', '[aria-modal="true"]', '.modal', '.overlay'
+      '[id*="cookie" i]', '[class*="cookie" i]',
+      '[id*="consent" i]', '[class*="consent" i]',
+      '[id*="gdpr" i]', '[class*="gdpr" i]',
+      '[class*="age-gate" i]', '[class*="agegate" i]', '[class*="AgeGate" i]',
+      '[id*="age-verification" i]', '[class*="age-verification" i]',
+      '[id*="agegate" i]', '[id*="age-gate" i]'
     ];
     for (var i = 0; i < sels.length; i++) {
       try {
@@ -35,18 +43,20 @@ object PlayerChromeJs {
         for (var j = 0; j < nodes.length; j++) {
           var el = nodes[j];
           if (!el || !el.getBoundingClientRect) continue;
-          // Skip our own overlays
           if (el.id === 'hammy-focus-ring' || el.id === 'hammy-video-hint') continue;
+          if (el.classList && el.classList.contains('hammy-player-root')) continue;
           var r = el.getBoundingClientRect();
           if (r.width < 80 || r.height < 40) continue;
           var st = window.getComputedStyle(el);
           if (st.display === 'none' || st.visibility === 'hidden' || parseFloat(st.opacity) === 0) continue;
-          // Likely blocking overlay covering a good chunk of the screen
-          if (r.width * r.height > (window.innerWidth * window.innerHeight * 0.15)) return true;
           var txt = (el.textContent || '').toLowerCase();
-          if (txt.indexOf('cookie') >= 0 || txt.indexOf('consent') >= 0 ||
-              txt.indexOf('accept') >= 0 || txt.indexOf('18') >= 0 ||
-              txt.indexOf('age') >= 0 || txt.indexOf('agree') >= 0) return true;
+          var looksLikeConsent =
+            txt.indexOf('cookie') >= 0 || txt.indexOf('consent') >= 0 ||
+            txt.indexOf('gdpr') >= 0 || txt.indexOf('accept') >= 0 ||
+            txt.indexOf('agree') >= 0 || txt.indexOf('18') >= 0 ||
+            txt.indexOf('age') >= 0 || txt.indexOf('terms') >= 0;
+          if (!looksLikeConsent) continue;
+          if (r.width * r.height > (window.innerWidth * window.innerHeight * 0.12)) return true;
         }
       } catch (e) {}
     }
@@ -61,7 +71,6 @@ object PlayerChromeJs {
       var v = videos[i];
       var r = v.getBoundingClientRect();
       var area = Math.max(r.width, v.videoWidth || 0) * Math.max(r.height, v.videoHeight || 0);
-      // Prefer videos that have a source / readyState
       var bonus = (v.readyState >= 1 || (v.currentSrc && v.currentSrc.length > 0)) ? 100000 : 0;
       var score = area + bonus;
       if (score > bestArea) {
@@ -70,6 +79,17 @@ object PlayerChromeJs {
       }
     }
     return best;
+  }
+
+  function videoIsReal(video) {
+    if (!video) return false;
+    try {
+      if (video.readyState >= 2) return true;
+      if (video.currentSrc && video.currentSrc.length > 0) return true;
+      if (!video.paused && !video.ended) return true;
+      if (video.networkState >= 2 && video.videoWidth > 0) return true;
+    } catch (e) {}
+    return false;
   }
 
   function findPlayerContainer(video) {
@@ -86,7 +106,6 @@ object PlayerChromeJs {
         if (c) return c;
       } catch (e) {}
     }
-    // Walk up a few parents looking for a sizable player-ish box
     var el = video.parentElement;
     for (var d = 0; d < 8 && el && el !== document.body; d++) {
       var cls = (el.className && el.className.toString) ? el.className.toString().toLowerCase() : '';
@@ -167,19 +186,32 @@ object PlayerChromeJs {
     s.textContent = chromeCss(hideChrome);
   }
 
+  function reparentToBody(node) {
+    if (!node || !document.body) return;
+    try {
+      if (node.parentElement === document.body) {
+        reparented = true;
+        return;
+      }
+      document.body.appendChild(node);
+      reparented = true;
+    } catch (e) {}
+  }
+
   function promotePlayer(video) {
     if (!video) return null;
     video.classList.add('hammy-main-video');
     var container = findPlayerContainer(video);
-    if (container) {
+    if (container && container !== video) {
       container.classList.add('hammy-player-root');
-      // If container is buried deep, also mark ancestors between body and container
-      // so "hide siblings" path still works when we move root to body visually via fixed.
-      try {
-        if (container.parentElement && container.parentElement !== document.body) {
-          // Clone-free: just ensure fixed positioning via CSS class is enough
-        }
-      } catch (e) {}
+      // Reparent player root onto body BEFORE sibling-hide CSS runs, so
+      // body > *:not(.hammy-player-root) cannot hide a nested ancestor chain.
+      reparentToBody(container);
+    } else {
+      // Fallback: promote the video element itself as the root
+      video.classList.add('hammy-player-root');
+      reparentToBody(video);
+      container = video;
     }
     return container;
   }
@@ -211,7 +243,6 @@ object PlayerChromeJs {
       video.setAttribute('playsinline', 'true');
       video.setAttribute('webkit-playsinline', 'true');
       if (!video.hasAttribute('tabindex')) video.setAttribute('tabindex', '0');
-      // muted-then-unmute pattern for autoplay policies
       var wasMuted = video.muted;
       if (video.paused) {
         video.muted = true;
@@ -228,7 +259,6 @@ object PlayerChromeJs {
               }, 400);
             }
           }).catch(function() {
-            // retry unmuted click-style later
             try { video.muted = wasMuted; } catch (e3) {}
           });
         } else if (!unmuted) {
@@ -244,14 +274,20 @@ object PlayerChromeJs {
 
   function apply() {
     var consent = isConsentVisible();
-    ensureStyle(!consent);
+    var video = findMainVideo();
+    var real = videoIsReal(video);
+
+    // Never hide chrome until a real video exists (avoids black screen)
+    var hideChrome = !consent && real;
+
+    ensureStyle(hideChrome);
     document.documentElement.classList.add('hammy-fs');
     if (document.body) document.body.classList.add('hammy-fs');
 
-    var video = findMainVideo();
     if (video) {
+      // Reparent before applying sibling-hide
       promotePlayer(video);
-      if (!consent) {
+      if (!consent && real) {
         tryPlay(video);
         tryFullscreen(video);
         try { video.focus(); } catch (e) {}
@@ -270,7 +306,11 @@ object PlayerChromeJs {
 
   try {
     var mo = new MutationObserver(function() {
-      apply();
+      if (moTimer) clearTimeout(moTimer);
+      moTimer = setTimeout(function() {
+        moTimer = null;
+        apply();
+      }, 250);
     });
     mo.observe(document.documentElement, { childList: true, subtree: true });
   } catch (e) {}
