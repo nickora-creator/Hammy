@@ -10,6 +10,7 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
@@ -24,11 +25,14 @@ import androidx.core.view.WindowInsetsControllerCompat
 
 /**
  * Dedicated player: loads only the selected video's official page URL in a WebView,
- * then injects lite player assist (gentle play + Skip/Close focus) plus the v0.1.1
+ * then injects lite player assist (gentle play + Skip Ads poll/focus) plus the
  * focus-ring / Center play-pause helpers.
  *
  * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
  * escape ad traps even if the page WebView is stuck.
+ *
+ * When the site's Skip Ads control is visible (HammyBridge.skipVisible), DPAD_CENTER
+ * clicks it and LEFT/RIGHT do not seek.
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -37,6 +41,9 @@ class PlayerActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var injectGeneration = 0
 
+    @Volatile
+    private var skipAdsVisible = false
+
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var fullScreenContainer: FrameLayout? = null
@@ -44,6 +51,17 @@ class PlayerActivity : AppCompatActivity() {
     private val userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+    /**
+     * Bridge from injected JS → Kotlin so key handling can gate on Skip Ads visibility
+     * without racing evaluateJavascript round-trips.
+     */
+    inner class HammyBridge {
+        @JavascriptInterface
+        fun skipVisible(visible: Boolean) {
+            skipAdsVisible = visible
+        }
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -87,6 +105,7 @@ class PlayerActivity : AppCompatActivity() {
         webView.setBackgroundColor(Color.BLACK)
         webView.isVerticalScrollBarEnabled = false
         webView.isHorizontalScrollBarEnabled = false
+        webView.addJavascriptInterface(HammyBridge(), "HammyBridge")
 
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
@@ -213,7 +232,7 @@ class PlayerActivity : AppCompatActivity() {
 
     /**
      * Intercept keys before the WebView (which consumes DPAD for scroll/focus).
-     * Seek / play-pause / exit must run here — onKeyDown is too late.
+     * Seek / play-pause / exit / Skip Ads must run here — onKeyDown is too late.
      */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) {
@@ -232,6 +251,10 @@ class PlayerActivity : AppCompatActivity() {
                     exitPlayer()
                     return true
                 }
+                if (skipAdsVisible) {
+                    clickSkipAds()
+                    return true
+                }
                 webView.evaluateJavascript(
                     "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
                     null
@@ -246,6 +269,20 @@ class PlayerActivity : AppCompatActivity() {
                     keyCode == KeyEvent.KEYCODE_DPAD_DOWN)
             ) {
                 return super.dispatchKeyEvent(event)
+            }
+            // Skip Ads visible: do not seek — keep JS focus on skip / let WebView handle
+            if (skipAdsVisible &&
+                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                    keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
+            ) {
+                webView.evaluateJavascript(
+                    "(function(){try{var el=document.querySelector('.hammy-escape-btn');" +
+                        "if(el){try{el.focus({preventScroll:true});}catch(e){el.focus();}}}" +
+                        "catch(e){}})();",
+                    null
+                )
+                // Do not call seek; allow WebView to process focus if it wants
+                return true
             }
             if (isSeekBackKey(keyCode)) {
                 seekVideo(-10)
@@ -262,6 +299,14 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         return super.dispatchKeyEvent(event)
+    }
+
+    private fun clickSkipAds() {
+        if (!::webView.isInitialized) return
+        webView.evaluateJavascript(
+            "(function(){try{if(window.__hammyClickSkip){return window.__hammyClickSkip();}}catch(e){}return false;})();",
+            null
+        )
     }
 
     private fun isSeekBackKey(keyCode: Int): Boolean =
@@ -289,6 +334,7 @@ class PlayerActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         injectGeneration++
+        skipAdsVisible = false
         mainHandler.removeCallbacksAndMessages(null)
         if (::webView.isInitialized) {
             webView.destroy()

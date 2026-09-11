@@ -4,10 +4,11 @@ package com.personal.hammy
  * Lite player assist injected into the official video page WebView.
  *
  * Goal: let the site's own player work like a normal WebView. Find the largest
- * <video>, gently try play() + scroll-into-view, and make visible Skip/Close-ad
- * controls focusable with a high z-index outline. Does NOT reparent the video,
- * hide body siblings, force fullscreen CSS, or run an aggressive ad classifier
- * that can mark real content as ads.
+ * <video>, gently try play() + scroll-into-view, and continuously poll for the
+ * site's own Skip Ads / Skip / Skip Ad control. When it appears: focus + outline,
+ * notify Kotlin via HammyBridge, and auto-click once after a short delay.
+ * Does NOT reparent the video, hide body siblings, force fullscreen CSS, or run
+ * an aggressive ad classifier.
  *
  * Focus-ring / Center play-pause stay in [FocusInjectJs]. Native Close + Back/Menu
  * always finish() from PlayerActivity.
@@ -18,21 +19,26 @@ object PlayerChromeJs {
     private fun buildScript(): String {
         return """
 (function(){
-  if (window.__hammyChromeV4) {
+  if (window.__hammyChromeV5) {
     try { window.__hammyChromeRefresh && window.__hammyChromeRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyChromeV4 = true;
-  // Clear stale aggressive chrome flags so older injects cannot fight the lite assist
+  window.__hammyChromeV5 = true;
+  // Clear stale chrome flags so older injects cannot fight the lite assist
+  try { delete window.__hammyChromeV4; } catch(e) {}
   try { delete window.__hammyChromeV3; } catch(e) {}
   try { delete window.__hammyChromeV2; } catch(e) {}
 
   var STYLE_ID = 'hammy-chrome-lite-css';
   var unmuted = false;
   var skipAutoClicked = false;
-  var lastSkipHelpAt = 0;
+  var skipClickScheduled = false;
   var lastPlayAt = 0;
   var moTimer = null;
+  var pollTimer = null;
+  var lastSkipEl = null;
+  var lastReportedVisible = null;
+  window.__hammySkipVisible = false;
 
   function ensureLiteStyle() {
     var s = document.getElementById(STYLE_ID);
@@ -96,7 +102,6 @@ object PlayerChromeJs {
     for (var i = 0; i < videos.length; i++) {
       var v = videos[i];
       var area = videoArea(v);
-      // Prefer ready / sourced videos when areas are similar
       var bonus = 0;
       try {
         if (v.readyState >= 2) bonus += 50000;
@@ -184,65 +189,142 @@ object PlayerChromeJs {
     }
   }
 
-  function findEscapeControls() {
+  function findSkipControls() {
     var out = [];
     var candidates = [];
     try {
       candidates = document.querySelectorAll(
-        'button, a, [role="button"], input[type="button"], div[tabindex], span[tabindex], [class*="skip" i], [id*="skip" i]'
+        'button, a, [role="button"], input[type="button"], div[tabindex], span[tabindex], [class*="skip" i], [id*="skip" i], [aria-label*="skip" i]'
       );
     } catch (e) {
       return out;
     }
-    var skipRe = /^(skip(\s+ad)?|skip\s+advertisement|close(\s+ad)?|continue|dismiss|not\s+now|\u00d7|x)$/i;
-    var softSkipRe = /\b(skip(\s+ad)?|skip\s+advertisement|close(\s+ad)?|continue to video|dismiss)\b/i;
+    var skipRe = /^(skip(\s+ads?)?|skip\s+advertisement)$/i;
+    var softSkipRe = /\b(skip(\s+ads?)?|skip\s+advertisement)\b/i;
     for (var i = 0; i < candidates.length; i++) {
       var el = candidates[i];
       if (!isVisibleClickable(el)) continue;
       var label = normalizeLabel(el);
       if (!label) continue;
-      var exact = skipRe.test(label.trim()) || label.trim() === 'x' || label.trim() === '\u00d7';
+      var exact = skipRe.test(label.trim());
       var soft = softSkipRe.test(label);
-      var clsIdHint = /skip|close-ad|ad-close|dismiss/i.test(label);
-      if (!(exact || soft || clsIdHint)) continue;
+      var ariaHint = false;
+      try {
+        var aria = (el.getAttribute('aria-label') || '').toLowerCase();
+        ariaHint = /\bskip(\s+ads?)?\b/.test(aria);
+      } catch (eA) {}
+      var clsIdHint = /skip/.test(label) && /\b(ad|ads|advertisement)\b/.test(label);
+      if (!(exact || soft || ariaHint || clsIdHint)) continue;
       if (/\b(accept all|agree|cookie|subscribe|sign in|login|register)\b/i.test(label) && !/\bskip\b/i.test(label)) continue;
-      var clearlySkipAd = /\bskip(\s+ad|\s+advertisement)?\b/i.test(label);
-      out.push({ el: el, exact: exact || clsIdHint, clearlySkipAd: clearlySkipAd, label: label });
+      var clearlySkipAd = /\bskip(\s+ads?|\s+advertisement)?\b/i.test(label) || ariaHint;
+      out.push({ el: el, exact: exact || clsIdHint || ariaHint, clearlySkipAd: clearlySkipAd, label: label });
     }
     return out;
   }
 
-  function helpEscapeAd() {
-    var now = Date.now();
-    if (now - lastSkipHelpAt < 800) return;
-    lastSkipHelpAt = now;
-    var controls = findEscapeControls();
-    if (!controls.length) return;
+  function notifySkipVisible(visible) {
+    window.__hammySkipVisible = !!visible;
+    if (lastReportedVisible === !!visible) return;
+    lastReportedVisible = !!visible;
+    try {
+      if (window.HammyBridge && typeof window.HammyBridge.skipVisible === 'function') {
+        window.HammyBridge.skipVisible(!!visible);
+      }
+    } catch (e) {}
+  }
 
+  function clickEl(el) {
+    if (!el) return false;
+    try {
+      el.click();
+      return true;
+    } catch (e2) {
+      try {
+        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return true;
+      } catch (e3) {
+        return false;
+      }
+    }
+  }
+
+  function focusSkip(el) {
+    if (!el) return;
+    try {
+      el.setAttribute('tabindex', '0');
+      el.classList.add('hammy-escape-btn');
+      try {
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest', behavior: 'auto' });
+      } catch (eScroll) {
+        try { el.scrollIntoView(false); } catch (eScroll2) {}
+      }
+      try { el.focus({ preventScroll: true }); } catch (eF) {
+        try { el.focus(); } catch (eF2) {}
+      }
+    } catch (e1) {}
+  }
+
+  function pickBestSkip(controls) {
+    if (!controls || !controls.length) return null;
     var best = controls[0];
     for (var i = 0; i < controls.length; i++) {
       if (controls[i].clearlySkipAd) { best = controls[i]; break; }
       if (controls[i].exact) best = controls[i];
     }
+    return best;
+  }
 
-    try {
-      best.el.setAttribute('tabindex', '0');
-      best.el.classList.add('hammy-escape-btn');
-      best.el.focus();
-    } catch (e1) {}
+  function pollSkip() {
+    var controls = findSkipControls();
+    var best = pickBestSkip(controls);
+    if (!best) {
+      lastSkipEl = null;
+      notifySkipVisible(false);
+      // Allow another auto-click if a new skip appears later in the session
+      skipAutoClicked = false;
+      skipClickScheduled = false;
+      return;
+    }
 
-    // Optional: auto-click once only when clearly labeled Skip Ad
-    if (!skipAutoClicked && best.clearlySkipAd) {
-      skipAutoClicked = true;
-      try {
-        best.el.click();
-      } catch (e2) {
-        try {
-          best.el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-        } catch (e3) {}
-      }
+    lastSkipEl = best.el;
+    notifySkipVisible(true);
+    focusSkip(best.el);
+
+    // Auto-click once after short delay if still visible
+    if (!skipAutoClicked && !skipClickScheduled && best.clearlySkipAd) {
+      skipClickScheduled = true;
+      var target = best.el;
+      setTimeout(function() {
+        skipClickScheduled = false;
+        if (skipAutoClicked) return;
+        if (!isVisibleClickable(target)) return;
+        // Re-check it still looks like skip
+        var still = findSkipControls();
+        var match = false;
+        for (var j = 0; j < still.length; j++) {
+          if (still[j].el === target) { match = true; break; }
+        }
+        if (!match) return;
+        skipAutoClicked = true;
+        clickEl(target);
+        // After click, visibility may drop on next poll
+      }, 400);
     }
   }
+
+  window.__hammyClickSkip = function() {
+    var el = lastSkipEl;
+    if (!el || !isVisibleClickable(el)) {
+      var controls = findSkipControls();
+      var best = pickBestSkip(controls);
+      el = best ? best.el : null;
+    }
+    if (!el) return false;
+    focusSkip(el);
+    return clickEl(el);
+  };
+
+  window.__hammyHelpEscapeAd = pollSkip;
 
   function apply() {
     ensureLiteStyle();
@@ -253,12 +335,10 @@ object PlayerChromeJs {
       tryPlay(video);
     }
 
-    // Always surface Skip/Close-ad if visible — no aggressive classifier
-    helpEscapeAd();
+    pollSkip();
   }
 
   window.__hammyChromeRefresh = apply;
-  window.__hammyHelpEscapeAd = helpEscapeAd;
 
   apply();
   setTimeout(apply, 400);
@@ -266,15 +346,21 @@ object PlayerChromeJs {
   setTimeout(apply, 2500);
   setTimeout(apply, 5000);
 
+  // Continuous poll ~500ms so late-appearing Skip Ads is caught quickly
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(function() {
+    try { pollSkip(); } catch (eP) {}
+  }, 500);
+
   try {
     var mo = new MutationObserver(function() {
       if (moTimer) clearTimeout(moTimer);
       moTimer = setTimeout(function() {
         moTimer = null;
-        apply();
-      }, 700);
+        try { pollSkip(); } catch (eM) {}
+      }, 200);
     });
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
   } catch (e) {}
 })();
         """.trimIndent()

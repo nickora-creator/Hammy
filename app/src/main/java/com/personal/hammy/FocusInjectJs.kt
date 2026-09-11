@@ -254,6 +254,29 @@ object FocusInjectJs {
     updateRing();
     var code = e.keyCode || e.which;
     var key = e.key || '';
+    // While site Skip Ads is visible, do not seek / toggle — keep focus on skip
+    if (window.__hammySkipVisible) {
+      if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
+        try {
+          var skipEl = document.querySelector('.hammy-escape-btn');
+          if (skipEl) {
+            try { skipEl.focus({ preventScroll: true }); } catch (eF) { skipEl.focus(); }
+          }
+        } catch (eS) {}
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      if (code === 13 || code === 23 || code === 32) {
+        try {
+          if (window.__hammyClickSkip && window.__hammyClickSkip()) {
+            e.preventDefault();
+            e.stopPropagation();
+          }
+        } catch (eC) {}
+        return;
+      }
+    }
     // ArrowLeft / ArrowRight: seek when a video exists (stop page scroll)
     if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
       if (findRelatedVideo(document.activeElement) || findMainVideo()) {
