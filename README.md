@@ -11,7 +11,7 @@ Personal-use Fire TV / Android TV sideload app. Native Leanback-style browse gri
 2. **Orientation** — Straight / Gay / Trans (large DPAD cards)  
 3. **Categories** — ~25–40 popular categories shuffled each open; select up to 10; Continue or Skip  
 4. **Browse (native)** — focusable poster/thumbnail cards in a TV grid + shortcut bar (Home, Change prefs, selected categories)  
-5. **Player** — fullscreen WebView for that video’s official page URL only; JS/CSS strips site chrome so the main `<video>` / player fills the screen (TV-style). Keeps focus-ring + Center play-pause; consent/age dialogs stay usable until dismissed.
+5. **Player** — fullscreen WebView for that video’s official page URL only; JS/CSS strips site chrome so the main content `<video>` / player fills the screen (TV-style). Ignores preroll/IMA/VAST ad videos, keeps Skip/Close visible, and offers a native leanback **Close** (Back/Menu also `finish()` to the grid). Focus-ring + Center play-pause; consent/age dialogs stay usable until dismissed.
 
 Preferences (orientation + categories) are stored in `SharedPreferences`.
 

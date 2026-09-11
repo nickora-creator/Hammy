@@ -16,6 +16,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -25,10 +26,14 @@ import androidx.core.view.WindowInsetsControllerCompat
  * Dedicated player: loads only the selected video's official page URL in a WebView,
  * then injects JS/CSS to present fullscreen video (hide site chrome) plus the v0.1.1
  * focus-ring / Center play-pause helpers.
+ *
+ * Always-on Close (and Back / Menu) finish() back to the browse grid so the user can
+ * escape ad traps even if the page WebView is stuck.
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
     private lateinit var rootLayout: FrameLayout
+    private lateinit var closeButton: TextView
     private val mainHandler = Handler(Looper.getMainLooper())
     private var injectGeneration = 0
 
@@ -54,6 +59,19 @@ class PlayerActivity : AppCompatActivity() {
 
         rootLayout = findViewById(R.id.playerRoot)
         webView = findViewById(R.id.playerWebView)
+        closeButton = findViewById(R.id.playerCloseButton)
+        closeButton.setOnClickListener { exitPlayer() }
+        closeButton.setOnKeyListener { _, keyCode, event ->
+            if (event.action == KeyEvent.ACTION_DOWN &&
+                (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER)
+            ) {
+                exitPlayer()
+                true
+            } else {
+                false
+            }
+        }
+
         val settings = webView.settings
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
@@ -94,8 +112,8 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 if (customView != null) {
-                    onHideCustomView()
-                    return
+                    // Tear down prior custom view without finishing the activity
+                    hideCustomViewOnly()
                 }
                 customView = view
                 customViewCallback = callback
@@ -115,25 +133,40 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 fullScreenContainer = container
                 rootLayout.addView(container)
+                // Keep Close above the custom-view layer
+                closeButton.bringToFront()
                 webView.visibility = View.GONE
                 applyImmersiveFullscreen()
             }
 
             override fun onHideCustomView() {
-                fullScreenContainer?.let { rootLayout.removeView(it) }
-                fullScreenContainer = null
-                customView = null
-                try {
-                    customViewCallback?.onCustomViewHidden()
-                } catch (_: Exception) {
-                }
-                customViewCallback = null
-                webView.visibility = View.VISIBLE
-                applyImmersiveFullscreen()
+                hideCustomViewOnly()
             }
         }
 
         webView.loadUrl(pageUrl)
+    }
+
+    private fun hideCustomViewOnly() {
+        fullScreenContainer?.let { rootLayout.removeView(it) }
+        fullScreenContainer = null
+        customView = null
+        try {
+            customViewCallback?.onCustomViewHidden()
+        } catch (_: Exception) {
+        }
+        customViewCallback = null
+        webView.visibility = View.VISIBLE
+        closeButton.bringToFront()
+        applyImmersiveFullscreen()
+    }
+
+    /** Always leave the player and return to the grid — never trapped by customView/ads. */
+    private fun exitPlayer() {
+        if (customView != null) {
+            hideCustomViewOnly()
+        }
+        finish()
     }
 
     private fun applyImmersiveFullscreen() {
@@ -179,31 +212,38 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (customView != null) {
-                webView.webChromeClient?.onHideCustomView()
-                return true
-            }
-            // Exit player → browse grid (do not walk in-page history)
-            finish()
+        // Back / Escape always leave the player (no customView hide-only loop)
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            exitPlayer()
+            return true
+        }
+        // Menu / Guide as alternate leanback escape hatch
+        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_GUIDE) {
+            exitPlayer()
             return true
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
+            // If Close has focus, let its click listener handle it
+            if (closeButton.isFocused) {
+                exitPlayer()
+                return true
+            }
             webView.evaluateJavascript(
                 "(function(){try{if(window.__hammyToggleVideo){return window.__hammyToggleVideo('native');}}catch(e){}return false;})();",
                 null
             )
+        }
+        // Up from WebView can move focus to Close for leanback users
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP && webView.hasFocus()) {
+            closeButton.requestFocus()
+            return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        if (customView != null) {
-            webView.webChromeClient?.onHideCustomView()
-            return
-        }
-        finish()
+        exitPlayer()
     }
 
     override fun onDestroy() {

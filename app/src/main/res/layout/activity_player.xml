@@ -13,4 +13,23 @@
         android:focusable="true"
         android:focusableInTouchMode="true"
         android:scrollbars="none" />
+
+    <!-- Always-on leanback escape hatch back to the browse grid -->
+    <TextView
+        android:id="@+id/playerCloseButton"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_marginTop="24dp"
+        android:layout_marginEnd="24dp"
+        android:background="@drawable/player_close_bg"
+        android:focusable="true"
+        android:focusableInTouchMode="true"
+        android:nextFocusDown="@id/playerWebView"
+        android:paddingHorizontal="20dp"
+        android:paddingVertical="10dp"
+        android:text="Close"
+        android:textColor="#FFFFFFFF"
+        android:textSize="18sp"
+        android:elevation="8dp" />
 </FrameLayout>
