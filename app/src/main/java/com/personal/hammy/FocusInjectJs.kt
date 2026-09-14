@@ -8,11 +8,12 @@ object FocusInjectJs {
         return """
 
 (function(){
-  if (window.__hammyFocusV2) {
+  if (window.__hammyFocusV3) {
     try { window.__hammyFocusRefresh && window.__hammyFocusRefresh(); } catch(e) {}
     return;
   }
-  window.__hammyFocusV2 = true;
+  window.__hammyFocusV3 = true;
+  try { delete window.__hammyFocusV2; } catch(e) {}
 
   var STYLE_ID = 'hammy-focus-css';
   var RING_ID = 'hammy-focus-ring';
@@ -220,26 +221,105 @@ object FocusInjectJs {
     } catch (e) { return false; }
   };
 
-  window.__hammySeekVideo = function(deltaSeconds) {
-    var now = Date.now();
-    if (now - lastSeekAt < 120) return false;
-    var delta = Number(deltaSeconds);
-    if (!isFinite(delta) || delta === 0) return false;
-    var v = findRelatedVideo(document.activeElement) || findMainVideo();
+  function seekHtml5Video(v, delta) {
     if (!v) return false;
-    var dur = v.duration;
-    if (!isFinite(dur) || dur <= 0) dur = Number.MAX_VALUE;
-    var next = v.currentTime + delta;
-    if (next < 0) next = 0;
-    if (next > dur) next = dur;
     try {
+      var dur = v.duration;
+      if (!isFinite(dur) || dur <= 0) dur = Number.MAX_VALUE;
+      var cur = Number(v.currentTime);
+      if (!isFinite(cur)) cur = 0;
+      var next = cur + delta;
+      if (next < 0) next = 0;
+      if (next > dur) next = dur;
       v.currentTime = next;
-      lastSeekAt = now;
-      updateRing();
-      var label = (delta > 0 ? '+' : '') + Math.round(delta) + 's';
-      showHintBrief(label, TOAST_HIDE_MS);
       return true;
     } catch (e) { return false; }
+  }
+
+  function collectVideos(root) {
+    var out = [];
+    try {
+      var list = (root || document).querySelectorAll('video');
+      for (var i = 0; i < list.length; i++) out.push(list[i]);
+    } catch (e0) {}
+    return out;
+  }
+
+  function seekSameOriginIframeVideos(delta) {
+    var n = 0;
+    try {
+      var iframes = document.querySelectorAll('iframe');
+      for (var i = 0; i < iframes.length; i++) {
+        try {
+          var win = iframes[i].contentWindow;
+          var idoc = iframes[i].contentDocument || (win && win.document);
+          if (!idoc) continue;
+          var ivs = collectVideos(idoc);
+          for (var k = 0; k < ivs.length; k++) {
+            if (seekHtml5Video(ivs[k], delta)) n++;
+          }
+        } catch (ie) {}
+      }
+    } catch (eI) {}
+    return n;
+  }
+
+  function seekPlayerApis(delta) {
+    var n = 0;
+    try {
+      if (typeof window.jwplayer === 'function') {
+        var jw = window.jwplayer();
+        if (jw && typeof jw.getPosition === 'function' && typeof jw.seek === 'function') {
+          var pos = Number(jw.getPosition()) || 0;
+          jw.seek(Math.max(0, pos + delta));
+          n++;
+        }
+      }
+    } catch (eJ) {}
+    try {
+      // video.js instances often expose player on video tech
+      var vjs = document.querySelectorAll('.video-js, .vjs-tech');
+      for (var i = 0; i < vjs.length; i++) {
+        var el = vjs[i];
+        var tech = (el.tagName && el.tagName.toLowerCase() === 'video') ? el : el.querySelector('video');
+        if (seekHtml5Video(tech, delta)) n++;
+        try {
+          if (el.player && typeof el.player.currentTime === 'function') {
+            var t = Number(el.player.currentTime()) || 0;
+            el.player.currentTime(Math.max(0, t + delta));
+            n++;
+          }
+        } catch (eP) {}
+      }
+    } catch (eV) {}
+    return n;
+  }
+
+  window.__hammySeekVideo = function(deltaSeconds) {
+    var now = Date.now();
+    if (now - lastSeekAt < 80) return false;
+    var delta = Number(deltaSeconds);
+    if (!isFinite(delta) || delta === 0) return false;
+    var applied = 0;
+    var primary = findRelatedVideo(document.activeElement) || findMainVideo();
+    if (seekHtml5Video(primary, delta)) applied++;
+    var videos = collectVideos(document);
+    for (var i = 0; i < videos.length; i++) {
+      if (videos[i] === primary) continue;
+      if (seekHtml5Video(videos[i], delta)) applied++;
+    }
+    applied += seekSameOriginIframeVideos(delta);
+    if (applied === 0) applied += seekPlayerApis(delta);
+    var label = (delta > 0 ? '+' : '') + Math.round(delta) + 's';
+    // Always show toast so the user sees the key registered even if no video yet.
+    try { showHintBrief(label, TOAST_HIDE_MS); } catch (eH) {}
+    if (applied > 0) {
+      lastSeekAt = now;
+      try { updateRing(); } catch (eR) {}
+      return true;
+    }
+    lastSeekAt = now;
+    return false;
   };
 
   function softLockPageScroll() {
@@ -254,21 +334,10 @@ object FocusInjectJs {
     updateRing();
     var code = e.keyCode || e.which;
     var key = e.key || '';
-    // While age gate or Skip Ads is visible, do not seek / toggle — keep focus on CTA
-    // Priority: age gate first, then skip
+    // Sticky CTA flags must NOT block seek — Left/Right always seek.
+    // OK/Enter still prefers age/skip CTA when those flags say visible.
     var blocking = !!(window.__hammyAgeGateVisible || window.__hammySkipVisible || window.__hammyBlockingCtaVisible);
     if (blocking) {
-      if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
-        try {
-          var ctaEl = document.querySelector('.hammy-escape-btn');
-          if (ctaEl) {
-            try { ctaEl.focus({ preventScroll: true }); } catch (eF) { ctaEl.focus(); }
-          }
-        } catch (eS) {}
-        e.preventDefault();
-        e.stopPropagation();
-        return;
-      }
       if (code === 13 || code === 23 || code === 32) {
         try {
           var clicked = false;
@@ -289,14 +358,12 @@ object FocusInjectJs {
         return;
       }
     }
-    // ArrowLeft / ArrowRight: seek when a video exists (stop page scroll)
+    // ArrowLeft / ArrowRight: always seek (native dispatchKeyEvent also seeks)
     if (code === 37 || code === 39 || key === 'ArrowLeft' || key === 'ArrowRight') {
-      if (findRelatedVideo(document.activeElement) || findMainVideo()) {
-        e.preventDefault();
-        e.stopPropagation();
-        var delta = (code === 37 || key === 'ArrowLeft') ? -10 : 10;
-        window.__hammySeekVideo(delta);
-      }
+      e.preventDefault();
+      e.stopPropagation();
+      var delta = (code === 37 || key === 'ArrowLeft') ? -10 : 10;
+      window.__hammySeekVideo(delta);
       return;
     }
     // 13 Enter, 23 DPAD_CENTER (Android WebView), 32 Space

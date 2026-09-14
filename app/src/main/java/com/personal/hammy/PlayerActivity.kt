@@ -13,6 +13,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -21,6 +22,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -31,6 +33,8 @@ import androidx.core.view.WindowInsetsControllerCompat
  * then injects lite player assist (gentle play + Skip Ads / age CTA soft focus) plus
  * the focus-ring / Center play-pause helpers.
  *
+ * Accepts first- and third-party cookies (and flushes on pause) so ad frequency-cap
+ * / session state persists across PlayerActivity WebViews — matching site behavior.
  * No CookieManager age seeding and no early localStorage/cookie age-bypass inject —
  * those blanked the page. Age / Skip CTAs are soft-focused once; hardClick / native
  * tap run only when the user presses OK (__hammyActivateFocusedOrBlockingCta).
@@ -40,7 +44,7 @@ import androidx.core.view.WindowInsetsControllerCompat
  *
  * DPAD_CENTER always tries __hammyActivateFocusedOrBlockingCta (native tapAt then
  * hard-click age/skip or focused CTA) before play-pause. When ageGateVisible /
- * skipVisible, LEFT/RIGHT do not seek.
+ * skipVisible, LEFT/RIGHT still seek (sticky CTA flags do not block seek).
  */
 class PlayerActivity : AppCompatActivity() {
     private lateinit var webView: WebView
@@ -175,6 +179,15 @@ class PlayerActivity : AppCompatActivity() {
         settings.builtInZoomControls = false
         settings.displayZoomControls = false
         settings.setSupportZoom(false)
+        // Persist site storage used by ad caps / session (do not clear on destroy).
+        @Suppress("DEPRECATION")
+        settings.databaseEnabled = true
+        settings.cacheMode = WebSettings.LOAD_DEFAULT
+
+        // Third-party cookies required for ad frequency caps across video pages.
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.setAcceptCookie(true)
+        cookieManager.setAcceptThirdPartyCookies(webView, true)
 
         webView.setBackgroundColor(Color.BLACK)
         webView.visibility = View.VISIBLE
@@ -399,7 +412,7 @@ class PlayerActivity : AppCompatActivity() {
                 activateFocusedOrBlockingCtaThenMaybeToggle()
                 return true
             }
-            // Close focused: let Left/Right/Up/Down move focus normally (no seek)
+            // Close focused: let Left/Right/Up/Down move focus (no seek).
             if (closeButton.isFocused &&
                 (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
                     keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
@@ -408,19 +421,8 @@ class PlayerActivity : AppCompatActivity() {
             ) {
                 return super.dispatchKeyEvent(event)
             }
-            // Age gate or Skip Ads visible: do not seek — keep JS focus on CTA
-            if ((ageGateVisible || skipAdsVisible) &&
-                (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
-                    keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
-            ) {
-                webView.evaluateJavascript(
-                    "(function(){try{var el=document.querySelector('.hammy-escape-btn');" +
-                        "if(el){try{el.focus({preventScroll:true});}catch(e){el.focus();}}}" +
-                        "catch(e){}})();",
-                    null
-                )
-                return true
-            }
+            // Always seek on Left/Right/Rewind/FF — do NOT gate on sticky
+            // ageGateVisible / skipAdsVisible (those can stick true after CTA dismiss).
             if (isSeekBackKey(keyCode)) {
                 seekVideo(-10)
                 return true
@@ -476,6 +478,11 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun seekVideo(deltaSeconds: Int) {
         if (!::webView.isInitialized) return
+        val label = if (deltaSeconds > 0) "+${deltaSeconds}s" else "${deltaSeconds}s"
+        try {
+            Toast.makeText(this, label, Toast.LENGTH_SHORT).show()
+        } catch (_: Exception) {
+        }
         webView.evaluateJavascript(
             "(function(){try{if(window.__hammySeekVideo){return window.__hammySeekVideo($deltaSeconds);}}catch(e){}return false;})();",
             null
@@ -487,11 +494,36 @@ class PlayerActivity : AppCompatActivity() {
         exitPlayer()
     }
 
+    override fun onPause() {
+        // Persist cookies to disk so the next PlayerActivity WebView sees ad-cap state.
+        try {
+            CookieManager.getInstance().flush()
+        } catch (_: Exception) {
+        }
+        if (::webView.isInitialized) {
+            webView.onPause()
+        }
+        super.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::webView.isInitialized) {
+            webView.onResume()
+        }
+    }
+
     override fun onDestroy() {
         injectGeneration++
         skipAdsVisible = false
         ageGateVisible = false
         mainHandler.removeCallbacksAndMessages(null)
+        // Flush again; do NOT clear cookies, cache, or DOM storage — that would
+        // reset ad frequency caps and force an ad on every video.
+        try {
+            CookieManager.getInstance().flush()
+        } catch (_: Exception) {
+        }
         if (::webView.isInitialized) {
             webView.destroy()
         }
